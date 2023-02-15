@@ -1,16 +1,35 @@
 version: "3.4"
 services:
+  nethermind_docker:
+    image: nethermind/nethermind:latest
+    restart: always
+    volumes:
+      - nethermind_docker:/data
+      - "./jwtsecret:/data/jwtsecret"
+    command: --config goerli --datadir /data --Network.DiscoveryPort=30303 --Network.P2PPort=30303 --JsonRpc.Enabled=true --JsonRpc.EnabledModules="net,eth,consensus,subscribe,web3,admin" --JsonRpc.Port=8545 --JsonRpc.Host=0.0.0.0 --Merge.Enabled=true --Merge.TerminalTotalDifficulty=58750000000000000000000 --Init.DiagnosticMode="None" --JsonRpc.AdditionalRpcUrls="http://localhost:8545|http;ws|net;eth;subscribe;engine;web3;client|no-auth,http://localhost:8551|http;ws|net;eth;subscribe;engine;web3;client" --JsonRpc.JwtSecretFile /data/jwtsecret --Sync.SnapSync=true
+    network_mode: host
+    container_name: nethermind_docker
+
+  geth_docker:
+    image: ethereum/client-go:stable
+    restart: always
+    volumes:
+      - geth_docker:/data
+      - "./jwtsecret:/data/jwtsecret"
+    command: --goerli --datadir /data --http --cache 2048 --maxpeers 30 --authrpc.addr localhost --authrpc.port 8551 --authrpc.vhosts localhost --authrpc.jwtsecret /data/jwtsecret
+    network_mode: host
+    container_name: geth_docker
+
   beacon_node:
-    image: chainsafe/lodestar:next
+    image: chainsafe/lodestar:latest
     restart: always
     volumes:
       - beacon_node:/data
       - logs:/logs
+      - "./jwtsecret:/data/jwtsecret"
     env_file: .env
-    ports:
-      - "9000:9000" # P2P port
-    #  - "9596:9596" # REST API port
-    command: beacon --dataDir /data --rest --rest.address 0.0.0.0 --metrics --logFile /logs/beacon.log --logFileLevel debug --logFileDailyRotate 5
+    network_mode: host
+    command: beacon --dataDir /data --rest --execution.urls http://127.0.0.1:8551 --rest.address 0.0.0.0 --metrics --logFile /logs/beacon.log --logFileLevel debug --logFileDailyRotate 5 --checkpointSyncUrl https://goerli.checkpoint-sync.ethpandaops.io --jwt-secret /data/jwtsecret --rest.namespace *
     # NodeJS applications have a default memory limit of 2.5GB.
     # This limit is bit tight for a Prater node, it is recommended to raise the limit
     # since memory may spike during certain network conditions.
@@ -35,6 +54,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
 
 volumes:
+  nethermind_docker:
+  geth_docker:
   beacon_node:
   logs:
   prometheus:
