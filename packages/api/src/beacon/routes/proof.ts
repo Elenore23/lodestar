@@ -1,4 +1,5 @@
 import {JsonPath} from "@chainsafe/ssz";
+import {Slot} from "@lodestar/types";
 import {Proof} from "@chainsafe/persistent-merkle-tree";
 import {ReturnTypes, RoutesData, Schema, sameType, ReqSerializers} from "../../utils/index.js";
 import {queryParseProofPathsArr, querySerializeProofPathsArr} from "../../utils/serdes.js";
@@ -16,6 +17,11 @@ export type Api = {
     stateId: string,
     jsonPaths: JsonPath[]
   ): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: Proof}}>>;
+
+  /**
+   * Returns a serialized proof of state.latestExecutionPayloadHeader.receiptsRoot at the requested `slot`.
+   */
+  getStateReceiptsRootProof(slot: Slot): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: Uint8Array}}>>;
 };
 
 /**
@@ -23,11 +29,13 @@ export type Api = {
  */
 export const routesData: RoutesData<Api> = {
   getStateProof: {url: "/eth/v0/beacon/proof/state/{state_id}", method: "GET"},
+  getStateReceiptsRootProof: {url: "/eth/v0/beacon/proof/state/receiptsRoot/{slot}", method: "GET"},
 };
 
 /* eslint-disable @typescript-eslint/naming-convention */
 export type ReqTypes = {
   getStateProof: {params: {state_id: string}; query: {paths: string[]}};
+  getStateReceiptsRootProof: {params: {slot: Slot}};
 };
 
 export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
@@ -37,6 +45,12 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
       parseReq: ({params, query}) => [params.state_id, queryParseProofPathsArr(query.paths)],
       schema: {params: {state_id: Schema.StringRequired}, body: Schema.AnyArray},
     },
+
+    getStateReceiptsRootProof: {
+      writeReq: (slot) => ({params: {slot: slot}}),
+      parseReq: ({params}) => [params.slot],
+      schema: {params: {slot: Schema.Uint}},
+    },
   };
 }
 
@@ -44,5 +58,6 @@ export function getReturnTypes(): ReturnTypes<Api> {
   return {
     // Just sent the proof JSON as-is
     getStateProof: sameType(),
+    getStateReceiptsRootProof: sameType(),
   };
 }

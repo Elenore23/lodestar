@@ -1,5 +1,6 @@
 import {routes, ServerApi} from "@lodestar/api";
 import {ProofType, Tree} from "@chainsafe/persistent-merkle-tree";
+import {Slot} from "@lodestar/types";
 import {ApiModules} from "../types.js";
 import {resolveStateId} from "../beacon/state/utils.js";
 import {IApiOptions} from "../../options.js";
@@ -36,6 +37,13 @@ export function getProofApi(
           gindices: Array.from(gindicesSet),
         }),
       };
+    },
+    async getStateReceiptsRootProof(slot: Slot) {
+      const data = await db.receiptsRootProof.get(slot);
+      if (!data) {
+        throw new Error("Can't find proof for slot: " + slot);
+      }
+      return {data: data};
     },
   };
 }

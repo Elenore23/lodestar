@@ -29,4 +29,10 @@ export const testData: GenericServerTestCases<Api> = {
     },
     /* eslint-enable quotes */
   },
+  getStateReceiptsRootProof: {
+    args: [0],
+    res: {
+      data: root,
+    },
+  },
 };

@@ -3,18 +3,24 @@ import {digest} from "@chainsafe/as-sha256";
 import {Proof} from "@chainsafe/persistent-merkle-tree";
 import {JsonPath} from "@chainsafe/ssz";
 import {routes, ServerApi} from "@lodestar/api";
-import {altair, RootHex, SyncPeriod} from "@lodestar/types";
+import {altair, RootHex, Slot, SyncPeriod} from "@lodestar/types";
 import {notNullish} from "@lodestar/utils";
 import {ForkName} from "@lodestar/params";
 import {BeaconStateAltair} from "../utils/types.js";
 
 export class ProofServerApiMock implements ServerApi<routes.proof.Api> {
   readonly states = new Map<RootHex, BeaconStateAltair>();
+  readonly receiptsRootProof = new Map<Slot, Uint8Array>();
 
   async getStateProof(stateId: string, paths: JsonPath[]): Promise<{data: Proof}> {
     const state = this.states.get(stateId);
     if (!state) throw Error(`stateId ${stateId} not available`);
     return {data: state.createProof(paths)};
+  }
+  async getStateReceiptsRootProof(slot: Slot): Promise<{data: Uint8Array}> {
+    const data = this.receiptsRootProof.get(slot);
+    if (!data) throw Error(`slot ${slot} not available`);
+    return {data: data};
   }
 }
 

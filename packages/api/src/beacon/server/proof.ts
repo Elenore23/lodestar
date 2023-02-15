@@ -23,5 +23,14 @@ export function getRoutes(config: IChainForkConfig, api: ServerApi<Api>): Server
         return Buffer.from(serializeProof(data));
       },
     },
+    getStateReceiptsRootProof: {
+      ...serverRoutes.getStateReceiptsRootProof,
+      handler: async (req) => {
+        const args = reqSerializers.getStateReceiptsRootProof.parseReq(req);
+        const {data} = await api.getStateReceiptsRootProof(...args);
+        // Fastify 3.x.x will automatically add header `Content-Type: application/octet-stream` if Buffer
+        return data;
+      },
+    },
   };
 }

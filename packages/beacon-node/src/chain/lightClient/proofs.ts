@@ -1,7 +1,7 @@
 import {BeaconStateAllForks} from "@lodestar/state-transition";
 import {FINALIZED_ROOT_GINDEX, BLOCK_BODY_EXECUTION_PAYLOAD_GINDEX, ForkExecution} from "@lodestar/params";
 import {allForks, ssz} from "@lodestar/types";
-import {Tree} from "@chainsafe/persistent-merkle-tree";
+import {Proof, ProofType, Tree} from "@chainsafe/persistent-merkle-tree";
 
 import {SyncCommitteeWitness} from "./types.js";
 
@@ -43,6 +43,14 @@ export function getCurrentSyncCommitteeBranch(syncCommitteesWitness: SyncCommitt
 export function getFinalizedRootProof(state: BeaconStateAllForks): Uint8Array[] {
   state.commit();
   return new Tree(state.node).getSingleProof(BigInt(FINALIZED_ROOT_GINDEX));
+}
+
+export function getReceiptsRootProof(state: BeaconStateAllForks): Proof {
+  state.commit();
+  return new Tree(state.node).getProof({
+    type: ProofType.treeOffset,
+    gindices: [BigInt(899)],
+  });
 }
 
 export function getBlockBodyExecutionHeaderProof(

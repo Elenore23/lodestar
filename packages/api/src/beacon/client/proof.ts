@@ -31,5 +31,21 @@ export function getClient(_config: IChainForkConfig, httpClient: IHttpClient): A
         throw err;
       }
     },
+    async getStateReceiptsRootProof(slot) {
+      try {
+        const res = await httpClient.arrayBuffer(fetchOptsSerializers.getStateReceiptsRootProof(slot));
+        const data = new Uint8Array(res.body);
+        return {ok: true, response: {data: data}, status: HttpStatusCode.OK};
+      } catch (err) {
+        if (err instanceof HttpError) {
+          return {
+            ok: false,
+            error: {code: err.status, message: err.message, operationId: "proof.getStateReceiptRootsProof"},
+            status: err.status,
+          };
+        }
+        throw err;
+      }
+    },
   };
 }
