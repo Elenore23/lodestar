@@ -1,9 +1,9 @@
 import {Slot, ssz} from "@lodestar/types";
-import {IChainForkConfig} from "@lodestar/config";
+import {ChainForkConfig} from "@lodestar/config";
 import {Db, Bucket, Repository} from "@lodestar/db";
 
 export class ReceiptsRootProofRepository extends Repository<Slot, Uint8Array> {
-  constructor(config: IChainForkConfig, db: Db) {
+  constructor(config: ChainForkConfig, db: Db) {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any
     const type = ssz.Bytes32 as any;
     super(config, db, Bucket.receiptsRootProof, type);

@@ -1,4 +1,4 @@
-import {DatabaseService, IDatabaseApiOptions} from "@lodestar/db";
+import {DatabaseService, DatabaseApiOptions} from "@lodestar/db";
 import {IBeaconDb} from "./interface.js";
 import {
   AttesterSlashingRepository,
@@ -49,7 +49,7 @@ export class BeaconDb extends DatabaseService implements IBeaconDb {
 
   backfilledRanges: BackfilledRanges;
 
-  constructor(opts: IDatabaseApiOptions) {
+  constructor(opts: DatabaseApiOptions) {
     super(opts);
 
     // Warning: If code is ever run in the constructor, must change this stub to not extend 'packages/beacon-node/test/utils/stub/beaconDb.ts' -

@@ -1,8 +1,7 @@
-import {JsonPath} from "@chainsafe/ssz";
 import {Slot} from "@lodestar/types";
 import {Proof} from "@chainsafe/persistent-merkle-tree";
+import {fromHexString, toHexString} from "@chainsafe/ssz";
 import {ReturnTypes, RoutesData, Schema, sameType, ReqSerializers} from "../../utils/index.js";
-import {queryParseProofPathsArr, querySerializeProofPathsArr} from "../../utils/serdes.js";
 import {HttpStatusCode} from "../../utils/client/httpStatusCode.js";
 import {ApiClientResponse} from "../../interfaces.js";
 
@@ -10,12 +9,20 @@ import {ApiClientResponse} from "../../interfaces.js";
 
 export type Api = {
   /**
-   * Returns a multiproof of `jsonPaths` at the requested `stateId`.
+   * Returns a multiproof of `descriptor` at the requested `stateId`.
    * The requested `stateId` may not be available. Regular nodes only keep recent states in memory.
    */
   getStateProof(
     stateId: string,
-    jsonPaths: JsonPath[]
+    descriptor: Uint8Array
+  ): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: Proof}}>>;
+  /**
+   * Returns a multiproof of `descriptor` at the requested `blockId`.
+   * The requested `blockId` may not be available. Regular nodes only keep recent states in memory.
+   */
+  getBlockProof(
+    blockId: string,
+    descriptor: Uint8Array
   ): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: Proof}}>>;
 
   /**
@@ -29,21 +36,28 @@ export type Api = {
  */
 export const routesData: RoutesData<Api> = {
   getStateProof: {url: "/eth/v0/beacon/proof/state/{state_id}", method: "GET"},
+  getBlockProof: {url: "/eth/v0/beacon/proof/block/{block_id}", method: "GET"},
   getStateReceiptsRootProof: {url: "/eth/v0/beacon/proof/state/receiptsRoot/{slot}", method: "GET"},
 };
 
 /* eslint-disable @typescript-eslint/naming-convention */
 export type ReqTypes = {
-  getStateProof: {params: {state_id: string}; query: {paths: string[]}};
+  getStateProof: {params: {state_id: string}; query: {format: string}};
+  getBlockProof: {params: {block_id: string}; query: {format: string}};
   getStateReceiptsRootProof: {params: {slot: Slot}};
 };
 
 export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
   return {
     getStateProof: {
-      writeReq: (state_id, paths) => ({params: {state_id}, query: {paths: querySerializeProofPathsArr(paths)}}),
-      parseReq: ({params, query}) => [params.state_id, queryParseProofPathsArr(query.paths)],
-      schema: {params: {state_id: Schema.StringRequired}, body: Schema.AnyArray},
+      writeReq: (state_id, descriptor) => ({params: {state_id}, query: {format: toHexString(descriptor)}}),
+      parseReq: ({params, query}) => [params.state_id, fromHexString(query.format)],
+      schema: {params: {state_id: Schema.StringRequired}, query: {format: Schema.StringRequired}},
+    },
+    getBlockProof: {
+      writeReq: (block_id, descriptor) => ({params: {block_id}, query: {format: toHexString(descriptor)}}),
+      parseReq: ({params, query}) => [params.block_id, fromHexString(query.format)],
+      schema: {params: {block_id: Schema.StringRequired}, query: {format: Schema.StringRequired}},
     },
 
     getStateReceiptsRootProof: {
@@ -58,6 +72,7 @@ export function getReturnTypes(): ReturnTypes<Api> {
   return {
     // Just sent the proof JSON as-is
     getStateProof: sameType(),
+    getBlockProof: sameType(),
     getStateReceiptsRootProof: sameType(),
   };
 }
