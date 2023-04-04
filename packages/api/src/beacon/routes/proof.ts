@@ -1,7 +1,8 @@
 import {Slot} from "@lodestar/types";
 import {Proof} from "@chainsafe/persistent-merkle-tree";
-import {fromHexString, toHexString} from "@chainsafe/ssz";
+import {fromHexString, JsonPath, toHexString} from "@chainsafe/ssz";
 import {ReturnTypes, RoutesData, Schema, sameType, ReqSerializers} from "../../utils/index.js";
+import {queryParseProofPathsArr, querySerializeProofPathsArr} from "../../utils/serdes.js";
 import {HttpStatusCode} from "../../utils/client/httpStatusCode.js";
 import {ApiClientResponse} from "../../interfaces.js";
 
@@ -29,6 +30,14 @@ export type Api = {
    * Returns a serialized proof of state.latestExecutionPayloadHeader.receiptsRoot at the requested `slot`.
    */
   getStateReceiptsRootProof(slot: Slot): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: Uint8Array}}>>;
+  /**
+   * Returns a multiproof of `jsonPaths` at the requested `stateId`.
+   * The requested `stateId` may not be available. Regular nodes only keep recent states in memory.
+   */
+  getStateProofWithPath(
+    stateId: string,
+    jsonPaths: JsonPath[]
+  ): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: Proof}}>>;
 };
 
 /**
@@ -37,7 +46,8 @@ export type Api = {
 export const routesData: RoutesData<Api> = {
   getStateProof: {url: "/eth/v0/beacon/proof/state/{state_id}", method: "GET"},
   getBlockProof: {url: "/eth/v0/beacon/proof/block/{block_id}", method: "GET"},
-  getStateReceiptsRootProof: {url: "/eth/v0/beacon/proof/state/receiptsRoot/{slot}", method: "GET"},
+  getStateReceiptsRootProof: {url: "/eth/v0/beacon/icon/proof/state/receiptsRoot/{slot}", method: "GET"},
+  getStateProofWithPath: {url: "/eth/v0/beacon/icon/proof/state/{state_id}", method: "GET"},
 };
 
 /* eslint-disable @typescript-eslint/naming-convention */
@@ -45,6 +55,7 @@ export type ReqTypes = {
   getStateProof: {params: {state_id: string}; query: {format: string}};
   getBlockProof: {params: {block_id: string}; query: {format: string}};
   getStateReceiptsRootProof: {params: {slot: Slot}};
+  getStateProofWithPath: {params: {state_id: string}; query: {paths: string[]}};
 };
 
 export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
@@ -65,6 +76,11 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
       parseReq: ({params}) => [params.slot],
       schema: {params: {slot: Schema.Uint}},
     },
+    getStateProofWithPath: {
+      writeReq: (state_id, paths) => ({params: {state_id}, query: {paths: querySerializeProofPathsArr(paths)}}),
+      parseReq: ({params, query}) => [params.state_id, queryParseProofPathsArr(query.paths)],
+      schema: {params: {state_id: Schema.StringRequired}, body: Schema.AnyArray},
+    },
   };
 }
 
@@ -74,5 +90,6 @@ export function getReturnTypes(): ReturnTypes<Api> {
     getStateProof: sameType(),
     getBlockProof: sameType(),
     getStateReceiptsRootProof: sameType(),
+    getStateProofWithPath: sameType(),
   };
 }

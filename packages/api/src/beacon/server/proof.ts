@@ -1,5 +1,5 @@
 import {ChainForkConfig} from "@lodestar/config";
-import {CompactMultiProof} from "@chainsafe/persistent-merkle-tree";
+import {CompactMultiProof, serializeProof} from "@chainsafe/persistent-merkle-tree";
 import {Api, ReqTypes, routesData, getReturnTypes, getReqSerializers} from "../routes/proof.js";
 import {ServerRoutes, getGenericJsonServer} from "../../utils/server/index.js";
 import {ServerApi} from "../../interfaces.js";
@@ -49,6 +49,15 @@ export function getRoutes(config: ChainForkConfig, api: ServerApi<Api>): ServerR
         const {data} = await api.getStateReceiptsRootProof(...args);
         // Fastify 3.x.x will automatically add header `Content-Type: application/octet-stream` if Buffer
         return data;
+      },
+    },
+    getStateProofWithPath: {
+      ...serverRoutes.getStateProof,
+      handler: async (req) => {
+        const args = reqSerializers.getStateProofWithPath.parseReq(req);
+        const {data} = await api.getStateProofWithPath(...args);
+        // Fastify 3.x.x will automatically add header `Content-Type: application/octet-stream` if Buffer
+        return Buffer.from(serializeProof(data));
       },
     },
   };

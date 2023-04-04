@@ -1,6 +1,6 @@
 import {routes, ServerApi} from "@lodestar/api";
 import {Slot} from "@lodestar/types";
-import {createProof, ProofType} from "@chainsafe/persistent-merkle-tree";
+import {createProof, ProofType, Tree} from "@chainsafe/persistent-merkle-tree";
 import {ApiModules} from "../types.js";
 import {resolveStateId} from "../beacon/state/utils.js";
 import {resolveBlockId} from "../beacon/blocks/utils.js";
@@ -52,6 +52,30 @@ export function getProofApi(
         throw new Error("Can't find proof for slot: " + slot);
       }
       return {data: data};
+    },
+    async getStateProofWithPath(stateId, jsonPaths) {
+      const {state} = await resolveStateId(config, chain, db, stateId);
+
+      // Commit any changes before computing the state root. In normal cases the state should have no changes here
+      state.commit();
+      const stateNode = state.node;
+      const tree = new Tree(stateNode);
+
+      const gindexes = state.type.tree_createProofGindexes(stateNode, jsonPaths);
+      // TODO: Is it necessary to de-duplicate?
+      //       It's not a problem if we overcount gindexes
+      const gindicesSet = new Set(gindexes);
+
+      if (gindicesSet.size > maxGindicesInProof) {
+        throw new Error("Requested proof is too large.");
+      }
+
+      return {
+        data: tree.getProof({
+          type: ProofType.treeOffset,
+          gindices: Array.from(gindicesSet),
+        }),
+      };
     },
   };
 }
