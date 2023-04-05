@@ -52,7 +52,7 @@ export function getRoutes(config: ChainForkConfig, api: ServerApi<Api>): ServerR
       },
     },
     getStateProofWithPath: {
-      ...serverRoutes.getStateProof,
+      ...serverRoutes.getStateProofWithPath,
       handler: async (req) => {
         const args = reqSerializers.getStateProofWithPath.parseReq(req);
         const {data} = await api.getStateProofWithPath(...args);

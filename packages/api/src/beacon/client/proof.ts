@@ -84,7 +84,7 @@ export function getClient(_config: ChainForkConfig, httpClient: IHttpClient): Ap
     },
     async getStateProofWithPath(stateId, paths) {
       try {
-        const res = await httpClient.arrayBuffer(fetchOptsSerializers.getStateProof(stateId, paths));
+        const res = await httpClient.arrayBuffer(fetchOptsSerializers.getStateProofWithPath(stateId, paths));
         const proof = deserializeProof(new Uint8Array(res.body));
 
         return {ok: true, response: {data: proof}, status: HttpStatusCode.OK};
