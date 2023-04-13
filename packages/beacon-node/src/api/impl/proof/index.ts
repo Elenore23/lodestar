@@ -59,23 +59,13 @@ export function getProofApi(
       // Commit any changes before computing the state root. In normal cases the state should have no changes here
       state.commit();
       const stateNode = state.node;
-      const tree = new Tree(stateNode);
 
       const gindexes = state.type.tree_createProofGindexes(stateNode, jsonPaths);
-      // TODO: Is it necessary to de-duplicate?
-      //       It's not a problem if we overcount gindexes
-      const gindicesSet = new Set(gindexes);
-
-      if (gindicesSet.size > maxGindicesInProof) {
-        throw new Error("Requested proof is too large.");
+      if (gindexes.length > 1) {
+        throw new Error("Requested proof is too large. " + gindexes);
       }
-
-      return {
-        data: tree.getProof({
-          type: ProofType.treeOffset,
-          gindices: Array.from(gindicesSet),
-        }),
-      };
+      const data = createProof(stateNode, {type: ProofType.single, gindex: gindexes[0]});
+      return {data};
     },
   };
 }
