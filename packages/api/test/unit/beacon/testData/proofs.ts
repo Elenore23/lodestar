@@ -32,4 +32,10 @@ export const testData: GenericServerTestCases<Api> = {
       format: "0x00000000",
     },
   },
+  getStateReceiptsRootProof: {
+    args: [0],
+    res: {
+      data: root,
+    },
+  },
 };

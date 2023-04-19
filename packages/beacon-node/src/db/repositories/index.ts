@@ -18,3 +18,4 @@ export {SyncCommitteeRepository} from "./lightclientSyncCommittee.js";
 export {SyncCommitteeWitnessRepository} from "./lightclientSyncCommitteeWitness.js";
 export {BackfilledRanges} from "./backfilledRanges.js";
 export {BLSToExecutionChangeRepository} from "./blsToExecutionChange.js";
+export {ReceiptsRootProofRepository} from "./receiptsRootProof.js";

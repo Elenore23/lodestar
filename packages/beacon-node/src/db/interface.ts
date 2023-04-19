@@ -17,6 +17,7 @@ import {
   BlobsSidecarRepository,
   BlobsSidecarArchiveRepository,
   BLSToExecutionChangeRepository,
+  ReceiptsRootProofRepository,
 } from "./repositories/index.js";
 import {PreGenesisState, PreGenesisStateLastProcessedBlock} from "./single/index.js";
 
@@ -57,6 +58,7 @@ export interface IBeaconDb {
   checkpointHeader: CheckpointHeaderRepository;
   syncCommittee: SyncCommitteeRepository;
   syncCommitteeWitness: SyncCommitteeWitnessRepository;
+  receiptsRootProof: ReceiptsRootProofRepository;
 
   backfilledRanges: BackfilledRanges;
 

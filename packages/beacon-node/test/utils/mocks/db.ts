@@ -17,6 +17,7 @@ import {
   BlobsSidecarRepository,
   BlobsSidecarArchiveRepository,
   BLSToExecutionChangeRepository,
+  ReceiptsRootProofRepository,
 } from "../../../src/db/repositories/index.js";
 import {PreGenesisState, PreGenesisStateLastProcessedBlock} from "../../../src/db/single/index.js";
 import {createStubInstance} from "../types.js";
@@ -59,6 +60,7 @@ export function getStubbedBeaconDb(): IBeaconDb {
     checkpointHeader: createStubInstance(CheckpointHeaderRepository),
     syncCommittee: createStubInstance(SyncCommitteeRepository),
     syncCommitteeWitness: createStubInstance(SyncCommitteeWitnessRepository),
+    receiptsRootProof: createStubInstance(ReceiptsRootProofRepository),
 
     backfilledRanges: createStubInstance(BackfilledRanges),
 

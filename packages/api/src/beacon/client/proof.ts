@@ -1,5 +1,5 @@
 import {ChainForkConfig} from "@lodestar/config";
-import {CompactMultiProof, ProofType} from "@chainsafe/persistent-merkle-tree";
+import {CompactMultiProof, deserializeProof, ProofType} from "@chainsafe/persistent-merkle-tree";
 import {Api, ReqTypes, routesData, getReqSerializers} from "../routes/proof.js";
 import {IHttpClient, getFetchOptsSerializers, HttpError} from "../../utils/client/index.js";
 import {HttpStatusCode} from "../../utils/client/httpStatusCode.js";
@@ -60,6 +60,39 @@ export function getClient(_config: ChainForkConfig, httpClient: IHttpClient): Ap
           return {
             ok: false,
             error: {code: err.status, message: err.message, operationId: "proof.getStateProof"},
+            status: err.status,
+          };
+        }
+        throw err;
+      }
+    },
+    async getStateReceiptsRootProof(slot) {
+      try {
+        const res = await httpClient.arrayBuffer(fetchOptsSerializers.getStateReceiptsRootProof(slot));
+        const data = new Uint8Array(res.body);
+        return {ok: true, response: {data: data}, status: HttpStatusCode.OK};
+      } catch (err) {
+        if (err instanceof HttpError) {
+          return {
+            ok: false,
+            error: {code: err.status, message: err.message, operationId: "proof.getStateReceiptRootsProof"},
+            status: err.status,
+          };
+        }
+        throw err;
+      }
+    },
+    async getStateProofWithPath(stateId, paths) {
+      try {
+        const res = await httpClient.arrayBuffer(fetchOptsSerializers.getStateProofWithPath(stateId, paths));
+        const proof = deserializeProof(new Uint8Array(res.body));
+
+        return {ok: true, response: {data: proof}, status: HttpStatusCode.OK};
+      } catch (err) {
+        if (err instanceof HttpError) {
+          return {
+            ok: false,
+            error: {code: err.status, message: err.message, operationId: "proof.getStateProofWithPath"},
             status: err.status,
           };
         }

@@ -2,13 +2,14 @@ import {concat} from "uint8arrays";
 import {digest} from "@chainsafe/as-sha256";
 import {createProof, Proof, ProofType} from "@chainsafe/persistent-merkle-tree";
 import {routes, ServerApi} from "@lodestar/api";
-import {altair, RootHex, SyncPeriod} from "@lodestar/types";
+import {altair, RootHex, Slot, SyncPeriod} from "@lodestar/types";
 import {notNullish} from "@lodestar/utils";
 import {ForkName} from "@lodestar/params";
 import {BeaconStateAltair} from "../utils/types.js";
 
 export class ProofServerApiMock implements ServerApi<routes.proof.Api> {
   readonly states = new Map<RootHex, BeaconStateAltair>();
+  readonly receiptsRootProof = new Map<Slot, Uint8Array>();
 
   async getStateProof(stateId: string, descriptor: Uint8Array): Promise<{data: Proof}> {
     const state = this.states.get(stateId);
@@ -18,6 +19,11 @@ export class ProofServerApiMock implements ServerApi<routes.proof.Api> {
 
   async getBlockProof(blockId: string, _descriptor: Uint8Array): Promise<{data: Proof}> {
     throw Error(`blockId ${blockId} not available`);
+  }
+  async getStateReceiptsRootProof(slot: Slot): Promise<{data: Uint8Array}> {
+    const data = this.receiptsRootProof.get(slot);
+    if (!data) throw Error(`slot ${slot} not available`);
+    return {data: data};
   }
 }
 

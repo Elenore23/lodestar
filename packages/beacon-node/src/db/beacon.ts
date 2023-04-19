@@ -18,6 +18,7 @@ import {
   BlobsSidecarRepository,
   BlobsSidecarArchiveRepository,
   BLSToExecutionChangeRepository,
+  ReceiptsRootProofRepository,
 } from "./repositories/index.js";
 import {PreGenesisState, PreGenesisStateLastProcessedBlock} from "./single/index.js";
 
@@ -44,6 +45,7 @@ export class BeaconDb extends DatabaseService implements IBeaconDb {
   checkpointHeader: CheckpointHeaderRepository;
   syncCommittee: SyncCommitteeRepository;
   syncCommitteeWitness: SyncCommitteeWitnessRepository;
+  receiptsRootProof: ReceiptsRootProofRepository;
 
   backfilledRanges: BackfilledRanges;
 
@@ -71,6 +73,7 @@ export class BeaconDb extends DatabaseService implements IBeaconDb {
     this.checkpointHeader = new CheckpointHeaderRepository(this.config, this.db);
     this.syncCommittee = new SyncCommitteeRepository(this.config, this.db);
     this.syncCommitteeWitness = new SyncCommitteeWitnessRepository(this.config, this.db);
+    this.receiptsRootProof = new ReceiptsRootProofRepository(this.config, this.db);
 
     this.backfilledRanges = new BackfilledRanges(this.config, this.db);
   }

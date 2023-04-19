@@ -16,6 +16,7 @@ import {
 import {Logger, MapDef, pruneSetToMax} from "@lodestar/utils";
 import {routes} from "@lodestar/api";
 import {BitArray, CompositeViewDU, toHexString} from "@chainsafe/ssz";
+import {serializeProof} from "@chainsafe/persistent-merkle-tree";
 import {MIN_SYNC_COMMITTEE_PARTICIPANTS, SYNC_COMMITTEE_SIZE, ForkName, ForkSeq, ForkExecution} from "@lodestar/params";
 
 import {IBeaconDb} from "../../db/index.js";
@@ -30,6 +31,7 @@ import {
   getFinalizedRootProof,
   getCurrentSyncCommitteeBranch,
   getBlockBodyExecutionHeaderProof,
+  getReceiptsRootProof,
 } from "./proofs.js";
 
 export type LightClientServerOpts = {
@@ -365,6 +367,8 @@ export class LightClientServer {
 
     const syncCommitteeWitness = getSyncCommitteesWitness(postState);
 
+    const receiptsRootProof = getReceiptsRootProof(postState);
+
     // Only store current sync committee once per run
     if (!this.storedCurrentSyncCommittee) {
       await Promise.all([
@@ -394,6 +398,9 @@ export class LightClientServer {
 
     // Store header in case it is referenced latter by a future finalized checkpoint
     await this.db.checkpointHeader.put(blockRoot, header);
+
+    await this.db.receiptsRootProof.put(blockSlot, serializeProof(receiptsRootProof));
+    this.logger.debug(`Stored receiptsRootProof for slot(${blockSlot})`);
 
     // Store finalized checkpoint data
     const finalizedCheckpoint = postState.finalizedCheckpoint;
