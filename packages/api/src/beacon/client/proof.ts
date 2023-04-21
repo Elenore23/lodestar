@@ -82,9 +82,9 @@ export function getClient(_config: ChainForkConfig, httpClient: IHttpClient): Ap
         throw err;
       }
     },
-    async getStateProofWithPath(stateId, paths) {
+    async getStateProofWithGIndex(stateId, gindex) {
       try {
-        const res = await httpClient.arrayBuffer(fetchOptsSerializers.getStateProofWithPath(stateId, paths));
+        const res = await httpClient.arrayBuffer(fetchOptsSerializers.getStateProofWithGIndex(stateId, gindex));
         const proof = deserializeProof(new Uint8Array(res.body));
 
         return {ok: true, response: {data: proof}, status: HttpStatusCode.OK};
@@ -92,7 +92,7 @@ export function getClient(_config: ChainForkConfig, httpClient: IHttpClient): Ap
         if (err instanceof HttpError) {
           return {
             ok: false,
-            error: {code: err.status, message: err.message, operationId: "proof.getStateProofWithPath"},
+            error: {code: err.status, message: err.message, operationId: "proof.getStateProofWithGIndex"},
             status: err.status,
           };
         }

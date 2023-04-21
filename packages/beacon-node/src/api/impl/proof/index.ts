@@ -1,6 +1,6 @@
 import {routes, ServerApi} from "@lodestar/api";
 import {Slot} from "@lodestar/types";
-import {createProof, ProofType, Tree} from "@chainsafe/persistent-merkle-tree";
+import {createProof, ProofType} from "@chainsafe/persistent-merkle-tree";
 import {ApiModules} from "../types.js";
 import {resolveStateId} from "../beacon/state/utils.js";
 import {resolveBlockId} from "../beacon/blocks/utils.js";
@@ -53,18 +53,13 @@ export function getProofApi(
       }
       return {data: data};
     },
-    async getStateProofWithPath(stateId, jsonPaths) {
+    async getStateProofWithGIndex(stateId: string, gindex: number) {
       const {state} = await resolveStateId(config, chain, db, stateId);
 
       // Commit any changes before computing the state root. In normal cases the state should have no changes here
       state.commit();
       const stateNode = state.node;
-
-      const gindexes = state.type.tree_createProofGindexes(stateNode, jsonPaths);
-      if (gindexes.length > 1) {
-        throw new Error("Requested proof is too large. " + gindexes);
-      }
-      const data = createProof(stateNode, {type: ProofType.single, gindex: gindexes[0]});
+      const data = createProof(stateNode, {type: ProofType.single, gindex: BigInt(gindex)});
       return {data};
     },
   };

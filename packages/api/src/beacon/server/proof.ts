@@ -51,11 +51,11 @@ export function getRoutes(config: ChainForkConfig, api: ServerApi<Api>): ServerR
         return data;
       },
     },
-    getStateProofWithPath: {
-      ...serverRoutes.getStateProofWithPath,
+    getStateProofWithGIndex: {
+      ...serverRoutes.getStateProofWithGIndex,
       handler: async (req) => {
-        const args = reqSerializers.getStateProofWithPath.parseReq(req);
-        const {data} = await api.getStateProofWithPath(...args);
+        const args = reqSerializers.getStateProofWithGIndex.parseReq(req);
+        const {data} = await api.getStateProofWithGIndex(...args);
         const proof = data as SingleProof;
         const witnesses = proof.witnesses;
         const response = new Uint8Array(1 + 8 + 32 + 32 * witnesses.length);
