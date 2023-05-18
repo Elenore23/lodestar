@@ -21,7 +21,7 @@ services:
     container_name: geth_docker
 
   beacon_node:
-    image: eunsoo/lodestar:dev
+    image: icon/lodestar:dev
     restart: always
     volumes:
       - beacon_sepolia:/data
