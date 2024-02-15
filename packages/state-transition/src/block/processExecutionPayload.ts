@@ -1,17 +1,23 @@
-import {ssz, allForks, capella, deneb} from "@lodestar/types";
 import {toHexString, byteArrayEquals} from "@chainsafe/ssz";
-import {ForkSeq} from "@lodestar/params";
+import {allForks, deneb} from "@lodestar/types";
+import {ForkSeq, MAX_BLOBS_PER_BLOCK} from "@lodestar/params";
 import {CachedBeaconStateBellatrix, CachedBeaconStateCapella} from "../types.js";
 import {getRandaoMix} from "../util/index.js";
-import {isExecutionPayload, isMergeTransitionComplete} from "../util/execution.js";
+import {
+  isExecutionPayload,
+  isMergeTransitionComplete,
+  getFullOrBlindedPayloadFromBody,
+  executionPayloadToPayloadHeader,
+} from "../util/execution.js";
 import {BlockExternalData, ExecutionPayloadStatus} from "./externalData.js";
 
 export function processExecutionPayload(
   fork: ForkSeq,
   state: CachedBeaconStateBellatrix | CachedBeaconStateCapella,
-  payload: allForks.FullOrBlindedExecutionPayload,
-  externalData: BlockExternalData
+  body: allForks.FullOrBlindedBeaconBlockBody,
+  externalData: Omit<BlockExternalData, "dataAvailableStatus">
 ): void {
+  const payload = getFullOrBlindedPayloadFromBody(body);
   // Verify consistency of the parent hash, block number, base fee per gas and gas limit
   // with respect to the previous execution payload header
   if (isMergeTransitionComplete(state)) {
@@ -43,6 +49,13 @@ export function processExecutionPayload(
     throw Error(`Invalid timestamp ${payload.timestamp} genesisTime=${state.genesisTime} slot=${state.slot}`);
   }
 
+  if (fork >= ForkSeq.deneb) {
+    const blobKzgCommitmentsLen = (body as deneb.BeaconBlockBody).blobKzgCommitments?.length ?? 0;
+    if (blobKzgCommitmentsLen > MAX_BLOBS_PER_BLOCK) {
+      throw Error(`blobKzgCommitmentsLen exceeds limit=${MAX_BLOBS_PER_BLOCK}`);
+    }
+  }
+
   // Verify the execution payload is valid
   //
   // if executionEngine is null, executionEngine.onPayload MUST be called after running processBlock to get the
@@ -68,43 +81,4 @@ export function processExecutionPayload(
   state.latestExecutionPayloadHeader = state.config
     .getExecutionForkTypes(state.slot)
     .ExecutionPayloadHeader.toViewDU(payloadHeader) as typeof state.latestExecutionPayloadHeader;
-}
-
-export function executionPayloadToPayloadHeader(
-  fork: ForkSeq,
-  payload: allForks.ExecutionPayload
-): allForks.ExecutionPayloadHeader {
-  const transactionsRoot = ssz.bellatrix.Transactions.hashTreeRoot(payload.transactions);
-
-  const bellatrixPayloadFields: allForks.ExecutionPayloadHeader = {
-    parentHash: payload.parentHash,
-    feeRecipient: payload.feeRecipient,
-    stateRoot: payload.stateRoot,
-    receiptsRoot: payload.receiptsRoot,
-    logsBloom: payload.logsBloom,
-    prevRandao: payload.prevRandao,
-    blockNumber: payload.blockNumber,
-    gasLimit: payload.gasLimit,
-    gasUsed: payload.gasUsed,
-    timestamp: payload.timestamp,
-    extraData: payload.extraData,
-    baseFeePerGas: payload.baseFeePerGas,
-    blockHash: payload.blockHash,
-    transactionsRoot,
-  };
-
-  if (fork >= ForkSeq.capella) {
-    (bellatrixPayloadFields as capella.ExecutionPayloadHeader).withdrawalsRoot = ssz.capella.Withdrawals.hashTreeRoot(
-      (payload as capella.ExecutionPayload).withdrawals
-    );
-  }
-
-  if (fork >= ForkSeq.deneb) {
-    // https://github.com/ethereum/consensus-specs/blob/dev/specs/eip4844/beacon-chain.md#process_execution_payload
-    (bellatrixPayloadFields as deneb.ExecutionPayloadHeader).excessDataGas = (
-      payload as deneb.ExecutionPayloadHeader | deneb.ExecutionPayload
-    ).excessDataGas;
-  }
-
-  return bellatrixPayloadFields;
 }

@@ -1,4 +1,5 @@
 import bls from "@chainsafe/bls";
+import {toHexString} from "@chainsafe/ssz";
 import {
   ForkName,
   MAX_ATTESTATIONS,
@@ -15,7 +16,6 @@ import {
   computeStartSlotAtEpoch,
   getBlockRootAtSlot,
 } from "@lodestar/state-transition";
-import {toHexString} from "@chainsafe/ssz";
 import {IForkChoice, EpochDifference} from "@lodestar/fork-choice";
 import {toHex, MapDef} from "@lodestar/utils";
 import {intersectUint8Arrays, IntersectResult} from "../../util/bitArray.js";
@@ -166,10 +166,16 @@ export class AggregatedAttestationPool {
       }
     }
 
-    return attestationsByScore
-      .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_ATTESTATIONS)
-      .map((attestation) => attestation.attestation);
+    const sortedAttestationsByScore = attestationsByScore.sort((a, b) => b.score - a.score);
+    const attestationsForBlock: phase0.Attestation[] = [];
+    for (const [i, attestationWithScore] of sortedAttestationsByScore.entries()) {
+      if (i >= MAX_ATTESTATIONS) {
+        break;
+      }
+      // attestations could be modified in this op pool, so we need to clone for block
+      attestationsForBlock.push(ssz.phase0.Attestation.clone(attestationWithScore.attestation));
+    }
+    return attestationsForBlock;
   }
 
   /**
@@ -217,7 +223,10 @@ type AttestationNonParticipant = {
 export class MatchingDataAttestationGroup {
   private readonly attestations: AttestationWithIndex[] = [];
 
-  constructor(readonly committee: ValidatorIndex[], readonly data: phase0.AttestationData) {}
+  constructor(
+    readonly committee: ValidatorIndex[],
+    readonly data: phase0.AttestationData
+  ) {}
 
   getAttestationCount(): number {
     return this.attestations.length;
@@ -447,16 +456,16 @@ export function isValidAttestationData(
     throw Error(`Attestation data.beaconBlockRoot ${beaconBlockRootHex} not found in forkchoice`);
   }
 
-  let attestationDependantRoot: string;
+  let attestationDependentRoot: string;
   try {
-    attestationDependantRoot = forkChoice.getDependentRoot(beaconBlock, EpochDifference.previous);
+    attestationDependentRoot = forkChoice.getDependentRoot(beaconBlock, EpochDifference.previous);
   } catch (_) {
     // getDependent root may throw error if the dependent root of attestation data is prior to finalized slot
     // ignore this attestation data in that case since we're not sure it's compatible to the state
     // see https://github.com/ChainSafe/lodestar/issues/4743
     return false;
   }
-  return attestationDependantRoot === stateDependentRoot;
+  return attestationDependentRoot === stateDependentRoot;
 }
 
 function flagIsTimelySource(flag: number): boolean {

@@ -1,9 +1,9 @@
+import {toHexString} from "@chainsafe/ssz";
 import {SLOTS_PER_EPOCH} from "@lodestar/params";
 import {sleep} from "@lodestar/utils";
 import {computeEpochAtSlot, isAggregatorFromCommitteeLength} from "@lodestar/state-transition";
 import {BLSSignature, Epoch, Slot, ValidatorIndex, RootHex} from "@lodestar/types";
 import {Api, ApiError, routes} from "@lodestar/api";
-import {toHexString} from "@chainsafe/ssz";
 import {batchItems, IClock, LoggerVc} from "../util/index.js";
 import {PubkeyHex} from "../types.js";
 import {Metrics} from "../metrics.js";
@@ -63,12 +63,25 @@ export class AttestationDutiesService {
 
     if (metrics) {
       metrics.attesterDutiesCount.addCollect(() => {
+        const currentSlot = this.clock.getCurrentSlot();
         let duties = 0;
-        for (const attDutiesAtEpoch of this.dutiesByIndexByEpoch.values()) {
+        let nextDutySlot = null;
+        for (const [epoch, attDutiesAtEpoch] of this.dutiesByIndexByEpoch) {
           duties += attDutiesAtEpoch.dutiesByIndex.size;
+
+          // Epochs are sorted, stop searching once a next duty slot is found
+          if (epoch < this.clock.currentEpoch || nextDutySlot !== null) continue;
+
+          for (const {duty} of attDutiesAtEpoch.dutiesByIndex.values()) {
+            // Set next duty slot to the closest future slot found in all duties
+            if (duty.slot > currentSlot && (nextDutySlot === null || duty.slot < nextDutySlot)) {
+              nextDutySlot = duty.slot;
+            }
+          }
         }
         metrics.attesterDutiesCount.set(duties);
         metrics.attesterDutiesEpochCount.set(this.dutiesByIndexByEpoch.size);
+        if (nextDutySlot !== null) metrics.attesterDutiesNextSlot.set(nextDutySlot);
       });
     }
   }
@@ -108,14 +121,14 @@ export class AttestationDutiesService {
    * If a reorg dependent root comes at a slot other than last slot of epoch
    * just update this.pendingDependentRootByEpoch() and process here
    */
-  private prepareForNextEpoch = async (slot: Slot): Promise<void> => {
+  private prepareForNextEpoch = async (slot: Slot, signal: AbortSignal): Promise<void> => {
     // only interested in last slot of epoch
     if ((slot + 1) % SLOTS_PER_EPOCH !== 0) {
       return;
     }
 
     // during the 1 / 3 of epoch, last block of epoch may come
-    await sleep(this.clock.msToSlot(slot + 1 / 3));
+    await sleep(this.clock.msToSlot(slot + 1 / 3), signal);
 
     const nextEpoch = computeEpochAtSlot(slot) + 1;
     const dependentRoot = this.dutiesByIndexByEpoch.get(nextEpoch)?.dependentRoot;
@@ -228,7 +241,8 @@ export class AttestationDutiesService {
 
     this.logger.debug("Downloaded attester duties", {epoch, dependentRoot, count: relevantDuties.length});
 
-    const priorDependentRoot = this.dutiesByIndexByEpoch.get(epoch)?.dependentRoot;
+    const dutiesAtEpoch = this.dutiesByIndexByEpoch.get(epoch);
+    const priorDependentRoot = dutiesAtEpoch?.dependentRoot;
     const dependentRootChanged = priorDependentRoot !== undefined && priorDependentRoot !== dependentRoot;
 
     if (!priorDependentRoot || dependentRootChanged) {
@@ -238,15 +252,34 @@ export class AttestationDutiesService {
         dutiesByIndex.set(duty.validatorIndex, dutyAndProof);
       }
       this.dutiesByIndexByEpoch.set(epoch, {dependentRoot, dutiesByIndex});
-    }
 
-    if (priorDependentRoot && dependentRootChanged) {
-      this.metrics?.attesterDutiesReorg.inc();
-      this.logger.warn("Attester duties re-org. This may happen from time to time", {
-        priorDependentRoot: priorDependentRoot,
-        dependentRoot: dependentRoot,
-        epoch,
-      });
+      if (priorDependentRoot && dependentRootChanged) {
+        this.metrics?.attesterDutiesReorg.inc();
+        this.logger.warn("Attester duties re-org. This may happen from time to time", {
+          priorDependentRoot: priorDependentRoot,
+          dependentRoot: dependentRoot,
+          epoch,
+        });
+      }
+    } else {
+      const existingDuties = dutiesAtEpoch.dutiesByIndex;
+      const existingDutiesCount = existingDuties.size;
+      const discoveredNewDuties = relevantDuties.length > existingDutiesCount;
+
+      if (discoveredNewDuties) {
+        for (const duty of relevantDuties) {
+          if (!existingDuties.has(duty.validatorIndex)) {
+            const dutyAndProof = await this.getDutyAndProof(duty);
+            existingDuties.set(duty.validatorIndex, dutyAndProof);
+          }
+        }
+
+        this.logger.debug("Discovered new attester duties", {
+          epoch,
+          dependentRoot,
+          count: relevantDuties.length - existingDutiesCount,
+        });
+      }
     }
   }
 

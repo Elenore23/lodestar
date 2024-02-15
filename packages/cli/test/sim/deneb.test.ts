@@ -1,65 +1,45 @@
 /* eslint-disable @typescript-eslint/naming-convention */
 import path from "node:path";
-import {activePreset} from "@lodestar/params";
-import {toHexString} from "@lodestar/utils";
 import {ApiError} from "@lodestar/api";
-import {nodeAssertion} from "../utils/simulation/assertions/nodeAssertion.js";
-import {CLIQUE_SEALING_PERIOD, SIM_TESTS_SECONDS_PER_SLOT} from "../utils/simulation/constants.js";
-import {CLClient, ELClient} from "../utils/simulation/interfaces.js";
+import {activePreset} from "@lodestar/params";
+import {toHex, toHexString} from "@lodestar/utils";
 import {SimulationEnvironment} from "../utils/simulation/SimulationEnvironment.js";
-import {getEstimatedTimeInSecForRun, getEstimatedTTD, logFilesDir} from "../utils/simulation/utils/index.js";
+import {nodeAssertion} from "../utils/simulation/assertions/nodeAssertion.js";
+import {AssertionMatch, BeaconClient, ExecutionClient} from "../utils/simulation/interfaces.js";
+import {defineSimTestConfig, logFilesDir} from "../utils/simulation/utils/index.js";
 import {connectAllNodes, connectNewNode, waitForNodeSync, waitForSlot} from "../utils/simulation/utils/network.js";
 
-const genesisSlotsDelay = 20;
 const altairForkEpoch = 2;
 const bellatrixForkEpoch = 4;
-// Make sure bellatrix started before TTD reach
-const additionalSlotsForTTD = activePreset.SLOTS_PER_EPOCH - 2;
 const runTillEpoch = 6;
 const syncWaitEpoch = 2;
 
-const runTimeoutMs =
-  getEstimatedTimeInSecForRun({
-    genesisSlotDelay: genesisSlotsDelay,
-    secondsPerSlot: SIM_TESTS_SECONDS_PER_SLOT,
-    runTill: runTillEpoch + syncWaitEpoch,
-    // After adding Nethermind its took longer to complete
-    graceExtraTimeFraction: 0.3,
-  }) * 1000;
-
-const ttd = getEstimatedTTD({
-  genesisDelay: genesisSlotsDelay,
-  bellatrixForkEpoch: bellatrixForkEpoch,
-  secondsPerSlot: SIM_TESTS_SECONDS_PER_SLOT,
-  cliqueSealingPeriod: CLIQUE_SEALING_PERIOD,
-  additionalSlots: additionalSlotsForTTD,
+const {estimatedTimeoutMs, forkConfig} = defineSimTestConfig({
+  ALTAIR_FORK_EPOCH: altairForkEpoch,
+  BELLATRIX_FORK_EPOCH: bellatrixForkEpoch,
+  runTillEpoch: runTillEpoch + syncWaitEpoch,
 });
 
 const env = await SimulationEnvironment.initWithDefaults(
   {
     id: "multi-fork",
     logsDir: path.join(logFilesDir, "multi-fork"),
-    chainConfig: {
-      ALTAIR_FORK_EPOCH: altairForkEpoch,
-      BELLATRIX_FORK_EPOCH: bellatrixForkEpoch,
-      GENESIS_DELAY: genesisSlotsDelay,
-      TERMINAL_TOTAL_DIFFICULTY: ttd,
-    },
+    forkConfig,
   },
   [
-    {id: "node-1", cl: CLClient.Lodestar, el: ELClient.Mock, keysCount: 32},
-    {id: "node-2", cl: CLClient.Lodestar, el: ELClient.Mock, keysCount: 32, remote: true},
+    {id: "node-1", beacon: BeaconClient.Lodestar, execution: ExecutionClient.Mock, keysCount: 32},
+    {id: "node-2", beacon: BeaconClient.Lodestar, execution: ExecutionClient.Mock, keysCount: 32, remote: true},
   ]
 );
 
 env.tracker.register({
   ...nodeAssertion,
   match: ({slot}) => {
-    return slot === 1 ? {match: true, remove: true} : false;
+    return slot === 1 ? AssertionMatch.Assert | AssertionMatch.Capture | AssertionMatch.Remove : AssertionMatch.None;
   },
 });
 
-await env.start({runTimeoutMs});
+await env.start({runTimeoutMs: estimatedTimeoutMs});
 await connectAllNodes(env.nodes);
 
 // The `TTD` will be reach around `start of bellatrixForkEpoch + additionalSlotsForMerge` slot
@@ -71,36 +51,36 @@ await waitForSlot(env.clock.getLastSlotOfEpoch(bellatrixForkEpoch) + activePrese
 
 // Range Sync
 // ========================================================
-const headForRangeSync = await env.nodes[0].cl.api.beacon.getBlockHeader("head");
+const headForRangeSync = await env.nodes[0].beacon.api.beacon.getBlockHeader("head");
 ApiError.assert(headForRangeSync);
 const rangeSync = await env.createNodePair({
   id: "range-sync-node",
-  cl: CLClient.Lodestar,
-  el: ELClient.Geth,
+  beacon: BeaconClient.Lodestar,
+  execution: ExecutionClient.Geth,
   keysCount: 0,
 });
 
 // Checkpoint sync involves Weak Subjectivity Checkpoint
 // ========================================================
-const res = await env.nodes[0].cl.api.beacon.getStateFinalityCheckpoints("head");
+const res = await env.nodes[0].beacon.api.beacon.getStateFinalityCheckpoints("head");
 ApiError.assert(res);
 const headForCheckpointSync = res.response.data.finalized;
 const checkpointSync = await env.createNodePair({
   id: "checkpoint-sync-node",
-  cl: {
-    type: CLClient.Lodestar,
-    options: {clientOptions: {wssCheckpoint: `${headForCheckpointSync.root}:${headForCheckpointSync.epoch}`}},
+  beacon: {
+    type: BeaconClient.Lodestar,
+    options: {clientOptions: {wssCheckpoint: `${toHex(headForCheckpointSync.root)}:${headForCheckpointSync.epoch}`}},
   },
-  el: ELClient.Geth,
+  execution: ExecutionClient.Geth,
   keysCount: 0,
 });
 
-await rangeSync.el.job.start();
-await rangeSync.cl.job.start();
+await rangeSync.execution.job.start();
+await rangeSync.beacon.job.start();
 await connectNewNode(rangeSync, env.nodes);
 
-await checkpointSync.el.job.start();
-await checkpointSync.cl.job.start();
+await checkpointSync.execution.job.start();
+await checkpointSync.beacon.job.start();
 await connectNewNode(checkpointSync, env.nodes);
 
 await Promise.all([
@@ -114,9 +94,9 @@ await Promise.all([
   }),
 ]);
 
-await rangeSync.cl.job.stop();
-await rangeSync.el.job.stop();
-await checkpointSync.cl.job.stop();
-await checkpointSync.el.job.stop();
+await rangeSync.beacon.job.stop();
+await rangeSync.execution.job.stop();
+await checkpointSync.beacon.job.stop();
+await checkpointSync.execution.job.stop();
 
 await env.stop();

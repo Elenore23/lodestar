@@ -1,7 +1,7 @@
-import {expect} from "chai";
+import {describe, it, expect} from "vitest";
+import {fromHexString} from "@chainsafe/ssz";
 import {ssz, allForks} from "@lodestar/types";
 import {createBeaconConfig, createChainForkConfig, defaultChainConfig} from "@lodestar/config";
-import {fromHexString} from "@chainsafe/ssz";
 import {isValidLightClientHeader} from "../../src/spec/utils.js";
 
 describe("isValidLightClientHeader", function () {
@@ -76,7 +76,7 @@ describe("isValidLightClientHeader", function () {
 
   const capellaUpgradedDenebHeader = {
     beacon: capellaLCHeader.beacon,
-    execution: {...capellaLCHeader.execution, excessDataGas: 0},
+    execution: {...capellaLCHeader.execution, blobGasUsed: 0, excessBlobGas: 0},
     executionBranch: capellaLCHeader.executionBranch,
   };
 
@@ -91,7 +91,7 @@ describe("isValidLightClientHeader", function () {
   testCases.forEach(([name, header]: [string, allForks.LightClientHeader]) => {
     it(name, function () {
       const isValid = isValidLightClientHeader(config, header);
-      expect(isValid).to.be.true;
+      expect(isValid).toBe(true);
     });
   });
 });

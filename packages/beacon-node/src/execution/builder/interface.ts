@@ -1,4 +1,5 @@
 import {allForks, bellatrix, Root, Slot, BLSPubkey, deneb, Wei} from "@lodestar/types";
+import {ForkExecution} from "@lodestar/params";
 
 export interface IExecutionBuilder {
   /**
@@ -6,7 +7,7 @@ export interface IExecutionBuilder {
    * an advance fcU to be issued to the engine port before payload header
    * fetch
    */
-  readonly issueLocalFcUForBlockProduction?: boolean;
+  readonly issueLocalFcUWithFeeRecipient?: string;
   status: boolean;
   /** Window to inspect missed slots for enabling/disabling builder circuit breaker */
   faultInspectionWindow: number;
@@ -17,16 +18,14 @@ export interface IExecutionBuilder {
   checkStatus(): Promise<void>;
   registerValidator(registrations: bellatrix.SignedValidatorRegistrationV1[]): Promise<void>;
   getHeader(
+    fork: ForkExecution,
     slot: Slot,
     parentHash: Root,
     proposerPubKey: BLSPubkey
   ): Promise<{
     header: allForks.ExecutionPayloadHeader;
-    blockValue: Wei;
+    executionPayloadValue: Wei;
     blobKzgCommitments?: deneb.BlobKzgCommitments;
   }>;
-  submitBlindedBlock(signedBlock: allForks.SignedBlindedBeaconBlock): Promise<allForks.SignedBeaconBlock>;
-  submitBlindedBlockV2(
-    signedBlock: allForks.SignedBlindedBeaconBlock
-  ): Promise<allForks.SignedBeaconBlockAndBlobsSidecar>;
+  submitBlindedBlock(signedBlock: allForks.SignedBlindedBeaconBlock): Promise<allForks.SignedBeaconBlockOrContents>;
 }

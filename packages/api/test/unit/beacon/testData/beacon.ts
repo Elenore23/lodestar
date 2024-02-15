@@ -1,10 +1,16 @@
+import {toHexString} from "@chainsafe/ssz";
 import {ForkName} from "@lodestar/params";
 import {ssz, Slot, allForks} from "@lodestar/types";
-import {toHexString} from "@chainsafe/ssz";
-import {Api, BlockHeaderResponse, ValidatorResponse} from "../../../../src/beacon/routes/beacon/index.js";
+import {
+  Api,
+  BlockHeaderResponse,
+  BroadcastValidation,
+  ValidatorResponse,
+} from "../../../../src/beacon/routes/beacon/index.js";
 import {GenericServerTestCases} from "../../../utils/genericServerTest.js";
 
-const root = Buffer.alloc(32, 1);
+const root = new Uint8Array(32).fill(1);
+const randao = new Uint8Array(32).fill(1);
 const balance = 32e9;
 const pubkeyHex = toHexString(Buffer.alloc(48, 1));
 
@@ -25,11 +31,11 @@ export const testData: GenericServerTestCases<Api> = {
   // block
 
   getBlock: {
-    args: ["head"],
+    args: ["head", "json"],
     res: {data: ssz.phase0.SignedBeaconBlock.defaultValue()},
   },
   getBlockV2: {
-    args: ["head"],
+    args: ["head", "json"],
     res: {executionOptimistic: true, data: ssz.bellatrix.SignedBeaconBlock.defaultValue(), version: ForkName.bellatrix},
   },
   getBlockAttestations: {
@@ -52,13 +58,21 @@ export const testData: GenericServerTestCases<Api> = {
     args: [ssz.phase0.SignedBeaconBlock.defaultValue()],
     res: undefined,
   },
+  publishBlockV2: {
+    args: [ssz.phase0.SignedBeaconBlock.defaultValue(), {broadcastValidation: BroadcastValidation.consensus}],
+    res: undefined,
+  },
   publishBlindedBlock: {
     args: [getDefaultBlindedBlock(64)],
     res: undefined,
   },
-  getBlobsSidecar: {
+  publishBlindedBlockV2: {
+    args: [getDefaultBlindedBlock(64), {broadcastValidation: BroadcastValidation.consensus}],
+    res: undefined,
+  },
+  getBlobSidecars: {
     args: ["head"],
-    res: {executionOptimistic: true, data: ssz.deneb.BlobsSidecar.defaultValue()},
+    res: {executionOptimistic: true, data: ssz.deneb.BlobSidecars.defaultValue()},
   },
 
   // pool
@@ -117,6 +131,10 @@ export const testData: GenericServerTestCases<Api> = {
   getStateFork: {
     args: ["head"],
     res: {executionOptimistic: true, data: ssz.phase0.Fork.defaultValue()},
+  },
+  getStateRandao: {
+    args: ["head", 1],
+    res: {executionOptimistic: true, data: {randao}},
   },
   getStateFinalityCheckpoints: {
     args: ["head"],

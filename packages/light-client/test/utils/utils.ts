@@ -1,6 +1,6 @@
-import bls from "@chainsafe/bls/switchable";
+import bls from "@chainsafe/bls";
 import {PointFormat, PublicKey, SecretKey} from "@chainsafe/bls/types";
-import {hash, Tree} from "@chainsafe/persistent-merkle-tree";
+import {hasher, Tree} from "@chainsafe/persistent-merkle-tree";
 import {BitArray, fromHexString} from "@chainsafe/ssz";
 import {BeaconConfig} from "@lodestar/config";
 import {
@@ -22,7 +22,7 @@ const CURRENT_SYNC_COMMITTEE_DEPTH = 5;
 /**
  * To enable debug logs run with
  * ```
- * DEBUG=true mocha ...
+ * DEBUG=true vitest ...
  * ```
  */
 export const testLogger = getLcLoggerConsole({logDebug: Boolean(process.env.DEBUG)});
@@ -235,9 +235,9 @@ export function computeMerkleBranch(
   for (let i = 0; i < depth; i++) {
     proof[i] = Buffer.alloc(32, i);
     if (Math.floor(index / 2 ** i) % 2) {
-      value = hash(proof[i], value);
+      value = hasher.digest64(proof[i], value);
     } else {
-      value = hash(value, proof[i]);
+      value = hasher.digest64(value, proof[i]);
     }
   }
   return {root: value, proof};

@@ -1,6 +1,6 @@
 import {defaultOptions} from "@lodestar/validator";
-import {logOptions} from "../../options/logOptions.js";
-import {ensure0xPrefix, CliCommandOptions, LogArgs} from "../../util/index.js";
+import {LogArgs, logOptions} from "../../options/logOptions.js";
+import {ensure0xPrefix, CliCommandOptions} from "../../util/index.js";
 import {keymanagerRestApiServerOptsDefault} from "./keymanager/server.js";
 import {defaultAccountPaths, defaultValidatorPaths} from "./paths.js";
 
@@ -32,19 +32,24 @@ export type IValidatorCliArgs = AccountValidatorArgs &
   LogArgs & {
     validatorsDbDir?: string;
     beaconNodes: string[];
-    force: boolean;
-    graffiti: string;
+    force?: boolean;
+    graffiti?: string;
     afterBlockDelaySlotFraction?: number;
     scAfterBlockDelaySlotFraction?: number;
     disableAttestationGrouping?: boolean;
     suggestedFeeRecipient?: string;
     proposerSettingsFile?: string;
     strictFeeRecipientCheck?: boolean;
-    doppelgangerProtectionEnabled?: boolean;
+    doppelgangerProtection?: boolean;
     defaultGasLimit?: number;
 
     builder?: boolean;
     "builder.selection"?: string;
+    "builder.boostFactor"?: string;
+
+    useProduceBlockV3?: boolean;
+    broadcastValidation?: string;
+    blindedLocal?: boolean;
 
     importKeystores?: string[];
     importKeystoresPassword?: string;
@@ -76,39 +81,45 @@ export type KeymanagerArgs = {
   "keymanager.port"?: number;
   "keymanager.address"?: string;
   "keymanager.cors"?: string;
+  "keymanager.headerLimit"?: number;
   "keymanager.bodyLimit"?: number;
 };
 
 export const keymanagerOptions: CliCommandOptions<KeymanagerArgs> = {
   keymanager: {
     type: "boolean",
-    description: "Enable keymanager API server",
+    description: "Enable key manager API server",
     default: false,
     group: "keymanager",
   },
   "keymanager.authEnabled": {
     type: "boolean",
-    description: "Enable token bearer authentication for keymanager API server",
+    description: "Enable token bearer authentication for key manager API server",
     default: true,
     group: "keymanager",
   },
   "keymanager.port": {
     type: "number",
-    description: "Set port for keymanager API",
+    description: "Set port for key manager API",
     defaultDescription: String(keymanagerRestApiServerOptsDefault.port),
     group: "keymanager",
   },
   "keymanager.address": {
     type: "string",
-    description: "Set host for keymanager API",
+    description: "Set host for key manager API",
     defaultDescription: keymanagerRestApiServerOptsDefault.address,
     group: "keymanager",
   },
   "keymanager.cors": {
     type: "string",
-    description: "Configures the Access-Control-Allow-Origin CORS header for keymanager API",
+    description: "Configures the Access-Control-Allow-Origin CORS header for key manager API",
     defaultDescription: keymanagerRestApiServerOptsDefault.cors,
     group: "keymanager",
+  },
+  "keymanager.headerLimit": {
+    hidden: true,
+    type: "number",
+    description: "Defines the maximum length of request headers, in bytes, the server is allowed to accept",
   },
   "keymanager.bodyLimit": {
     hidden: true,
@@ -201,62 +212,86 @@ export const validatorOptions: CliCommandOptions<IValidatorCliArgs> = {
 
   proposerSettingsFile: {
     description:
-      "A yaml file to specify detailed default and per validator pubkey customized proposer configs. PS: This feature and its format is in alpha and subject to change",
+      "A yaml file to specify detailed default and per validator public key customized proposer configs. PS: This feature and its format is in alpha and subject to change",
     type: "string",
   },
 
   suggestedFeeRecipient: {
     description:
-      "Specify fee recipient default for collecting the EL block fees and rewards (a hex string representing 20 bytes address: ^0x[a-fA-F0-9]{40}$). It would be possible (WIP) to override this per validator key using config or keymanager API. Only used post merge.",
+      "Specify fee recipient default for collecting the EL block fees and rewards (a hex string representing 20 bytes address: ^0x[a-fA-F0-9]{40}$). It would be possible (WIP) to override this per validator key using config or key manager API. Only used post merge.",
     defaultDescription: defaultOptions.suggestedFeeRecipient,
     type: "string",
   },
 
   strictFeeRecipientCheck: {
-    description: "Enable strict checking of the validator's feeRecipient with the one returned by engine",
+    description: "Enable strict checking of the validator's `feeRecipient` with the one returned by engine",
     type: "boolean",
   },
 
   defaultGasLimit: {
-    description: "Suggested gasLimit to the engine/builder for building execution payloads. Only used post merge.",
+    description: "Suggested gas limit to the engine/builder for building execution payloads. Only used post merge.",
     defaultDescription: `${defaultOptions.defaultGasLimit}`,
     type: "number",
   },
 
   builder: {
     type: "boolean",
-    description: "Enable execution payload production via a builder for better rewards",
+    description: `An alias for \`--builder.selection ${defaultOptions.builderAliasSelection}\` for the builder flow, ignored if \`--builder.selection\` is explicitly provided`,
     group: "builder",
   },
 
   "builder.selection": {
     type: "string",
-    description: "Default builder block selection strategy: maxprofit or builderalways",
+    description: "Builder block selection strategy `maxprofit`, `builderalways`, `builderonly` or `executiononly`",
     defaultDescription: `${defaultOptions.builderSelection}`,
     group: "builder",
   },
 
+  "builder.boostFactor": {
+    type: "string",
+    description:
+      "Percentage multiplier the block producing beacon node must apply to boost (>100) or dampen (<100) builder block value for selection against execution block. The multiplier is ignored if `--builder.selection` is set to anything other than `maxprofit`",
+    defaultDescription: `${defaultOptions.builderBoostFactor}`,
+    group: "builder",
+  },
+
+  useProduceBlockV3: {
+    type: "boolean",
+    description: "Enable/disable usage of produceBlockV3 for block production, is auto enabled on deneb+ blocks",
+  },
+
+  broadcastValidation: {
+    type: "string",
+    description: "Validations to be run by beacon node for the signed block prior to publishing",
+    defaultDescription: `${defaultOptions.broadcastValidation}`,
+  },
+
+  blindedLocal: {
+    type: "string",
+    description: "Request fetching local block in blinded format for produceBlockV3",
+    defaultDescription: `${defaultOptions.blindedLocal}`,
+  },
+
   importKeystores: {
     alias: ["keystore"], // Backwards compatibility with old `validator import` cmdx
-    description: "Path(s) to a directory or single filepath to validator keystores, i.e. Launchpad validators",
+    description: "Path(s) to a directory or single file path to validator keystores, i.e. Launchpad validators",
     defaultDescription: "./keystores/*.json",
     type: "array",
   },
 
   importKeystoresPassword: {
     alias: ["passphraseFile"], // Backwards compatibility with old `validator import` cmd
-    description: "Path to a file with password to decrypt all keystores from importKeystores option",
+    description: "Path to a file with password to decrypt all keystores from `importKeystores` option",
     defaultDescription: "./password.txt",
     type: "string",
   },
 
-  doppelgangerProtectionEnabled: {
+  doppelgangerProtection: {
+    alias: ["doppelgangerProtectionEnabled"],
     description: "Enables Doppelganger protection",
     default: false,
     type: "boolean",
   },
-
-  // HIDDEN INTEROP OPTIONS
 
   // Remote signer
 
@@ -268,7 +303,7 @@ export const validatorOptions: CliCommandOptions<IValidatorCliArgs> = {
 
   "externalSigner.pubkeys": {
     description:
-      "List of validator public keys used by an external signer. May also provide a single string a comma separated public keys",
+      "List of validator public keys used by an external signer. May also provide a single string of comma-separated public keys",
     type: "array",
     string: true, // Ensures the pubkey string is not automatically converted to numbers
     coerce: (pubkeys: string[]): string[] =>
@@ -282,7 +317,8 @@ export const validatorOptions: CliCommandOptions<IValidatorCliArgs> = {
 
   "externalSigner.fetch": {
     conflicts: ["externalSigner.pubkeys"],
-    description: "Fetch then list of pubkeys to validate from an external signer",
+    description:
+      "Fetch the list of public keys to validate from an external signer. Cannot be used in combination with `--externalSigner.pubkeys`",
     type: "boolean",
     group: "externalSignerUrl",
   },

@@ -31,8 +31,8 @@ export type Api = {
     ApiClientResponse<{
       [HttpStatusCode.OK]: {
         version: ForkName;
-        data: allForks.LightClientUpdate;
-      }[];
+        data: allForks.LightClientUpdate[];
+      };
     }>
   >;
   /**
@@ -128,18 +128,12 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
 }
 
 export function getReturnTypes(): ReturnTypes<Api> {
-  // Form a TypeJson convertor for getUpdates
-  const VersionedUpdate = WithVersion((fork: ForkName) =>
-    isForkLightClient(fork) ? ssz.allForksLightClient[fork].LightClientUpdate : ssz.altair.LightClientUpdate
-  );
-  const getUpdates = {
-    toJson: (updates: {version: ForkName; data: allForks.LightClientUpdate}[]) =>
-      updates.map((data) => VersionedUpdate.toJson(data)),
-    fromJson: (updates: unknown[]) => updates.map((data) => VersionedUpdate.fromJson(data)),
-  };
-
   return {
-    getUpdates,
+    getUpdates: WithVersion((fork: ForkName) =>
+      isForkLightClient(fork)
+        ? ArrayOf(ssz.allForksLightClient[fork].LightClientUpdate)
+        : ArrayOf(ssz.altair.LightClientUpdate)
+    ),
     getOptimisticUpdate: WithVersion((fork: ForkName) =>
       isForkLightClient(fork)
         ? ssz.allForksLightClient[fork].LightClientOptimisticUpdate

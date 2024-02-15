@@ -1,5 +1,5 @@
 import {ContainerType, fromHexString, toHexString, Type} from "@chainsafe/ssz";
-import {ForkName} from "@lodestar/params";
+import {ForkName, ForkBlobs, isForkBlobs, isForkExecution, ForkPreBlobs, ForkExecution} from "@lodestar/params";
 import {
   allForks,
   altair,
@@ -13,11 +13,13 @@ import {
   Slot,
   ssz,
   UintNum64,
+  UintBn64,
   ValidatorIndex,
   RootHex,
   StringType,
   SubcommitteeIndex,
   Wei,
+  ProducedBlockSource,
 } from "@lodestar/types";
 import {ApiClientResponse} from "../../interfaces.js";
 import {HttpStatusCode} from "../../utils/client/httpStatusCode.js";
@@ -27,15 +29,48 @@ import {
   ArrayOf,
   Schema,
   WithVersion,
-  WithBlockValue,
+  WithBlockValues,
   reqOnlyBody,
   ReqSerializers,
   jsonType,
   ContainerDataExecutionOptimistic,
   ContainerData,
+  TypeJson,
 } from "../../utils/index.js";
 import {fromU64Str, fromGraffitiHex, toU64Str, U64Str, toGraffitiHex} from "../../utils/serdes.js";
+import {allForksBlockContentsResSerializer} from "../../utils/routes.js";
 import {ExecutionOptimistic} from "./beacon/block.js";
+
+export enum BuilderSelection {
+  BuilderAlways = "builderalways",
+  MaxProfit = "maxprofit",
+  /** Only activate builder flow for DVT block proposal protocols */
+  BuilderOnly = "builderonly",
+  /** Only builds execution block*/
+  ExecutionOnly = "executiononly",
+}
+
+export type ExtraProduceBlockOps = {
+  feeRecipient?: string;
+  builderSelection?: BuilderSelection;
+  builderBoostFactor?: UintBn64;
+  strictFeeRecipientCheck?: boolean;
+  blindedLocal?: boolean;
+};
+
+export type ProduceBlockOrContentsRes = {executionPayloadValue: Wei; consensusBlockValue: Wei} & (
+  | {data: allForks.BeaconBlock; version: ForkPreBlobs}
+  | {data: allForks.BlockContents; version: ForkBlobs}
+);
+export type ProduceBlindedBlockRes = {executionPayloadValue: Wei; consensusBlockValue: Wei} & {
+  data: allForks.BlindedBeaconBlock;
+  version: ForkExecution;
+};
+
+export type ProduceFullOrBlindedBlockOrContentsRes = {executionPayloadSource: ProducedBlockSource} & (
+  | (ProduceBlockOrContentsRes & {executionPayloadBlinded: false})
+  | (ProduceBlindedBlockRes & {executionPayloadBlinded: true})
+);
 
 // See /packages/api/src/routes/index.ts for reasoning and instructions to add new routes
 
@@ -126,7 +161,6 @@ export type SyncCommitteeSelection = {
 
 export type LivenessResponseData = {
   index: ValidatorIndex;
-  epoch: Epoch;
   isLive: boolean;
 };
 
@@ -199,7 +233,7 @@ export type Api = {
     graffiti: string
   ): Promise<
     ApiClientResponse<
-      {[HttpStatusCode.OK]: {data: allForks.BeaconBlock; blockValue: Wei}},
+      {[HttpStatusCode.OK]: {data: allForks.BeaconBlock}},
       HttpStatusCode.BAD_REQUEST | HttpStatusCode.SERVICE_UNAVAILABLE
     >
   >;
@@ -220,7 +254,32 @@ export type Api = {
     graffiti: string
   ): Promise<
     ApiClientResponse<
-      {[HttpStatusCode.OK]: {data: allForks.BeaconBlock; version: ForkName; blockValue: Wei}},
+      {[HttpStatusCode.OK]: ProduceBlockOrContentsRes},
+      HttpStatusCode.BAD_REQUEST | HttpStatusCode.SERVICE_UNAVAILABLE
+    >
+  >;
+
+  /**
+   * Requests a beacon node to produce a valid block, which can then be signed by a validator.
+   * Metadata in the response indicates the type of block produced, and the supported types of block
+   * will be added to as forks progress.
+   * @param slot The slot for which the block should be proposed.
+   * @param randaoReveal The validator's randao reveal value.
+   * @param graffiti Arbitrary data validator wants to include in block.
+   * @returns any Success response
+   * @throws ApiError
+   */
+  produceBlockV3(
+    slot: Slot,
+    randaoReveal: BLSSignature,
+    graffiti: string,
+    skipRandaoVerification?: boolean,
+    opts?: ExtraProduceBlockOps
+  ): Promise<
+    ApiClientResponse<
+      {
+        [HttpStatusCode.OK]: ProduceFullOrBlindedBlockOrContentsRes;
+      },
       HttpStatusCode.BAD_REQUEST | HttpStatusCode.SERVICE_UNAVAILABLE
     >
   >;
@@ -231,7 +290,9 @@ export type Api = {
     graffiti: string
   ): Promise<
     ApiClientResponse<
-      {[HttpStatusCode.OK]: {data: allForks.BlindedBeaconBlock; version: ForkName; blockValue: Wei}},
+      {
+        [HttpStatusCode.OK]: ProduceBlindedBlockRes;
+      },
       HttpStatusCode.BAD_REQUEST | HttpStatusCode.SERVICE_UNAVAILABLE
     >
   >;
@@ -378,9 +439,9 @@ export type Api = {
 
   /** Returns validator indices that have been observed to be active on the network */
   getLiveness(
-    indices: ValidatorIndex[],
-    epoch: Epoch
-  ): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: LivenessResponseData[]}}>>;
+    epoch: Epoch,
+    validatorIndices: ValidatorIndex[]
+  ): Promise<ApiClientResponse<{[HttpStatusCode.OK]: {data: LivenessResponseData[]}}, HttpStatusCode.BAD_REQUEST>>;
 
   registerValidator(
     registrations: bellatrix.SignedValidatorRegistrationV1[]
@@ -396,6 +457,7 @@ export const routesData: RoutesData<Api> = {
   getSyncCommitteeDuties: {url: "/eth/v1/validator/duties/sync/{epoch}", method: "POST"},
   produceBlock: {url: "/eth/v1/validator/blocks/{slot}", method: "GET"},
   produceBlockV2: {url: "/eth/v2/validator/blocks/{slot}", method: "GET"},
+  produceBlockV3: {url: "/eth/v3/validator/blocks/{slot}", method: "GET"},
   produceBlindedBlock: {url: "/eth/v1/validator/blinded_blocks/{slot}", method: "GET"},
   produceAttestationData: {url: "/eth/v1/validator/attestation_data", method: "GET"},
   produceSyncCommitteeContribution: {url: "/eth/v1/validator/sync_committee_contribution", method: "GET"},
@@ -407,7 +469,7 @@ export const routesData: RoutesData<Api> = {
   prepareBeaconProposer: {url: "/eth/v1/validator/prepare_beacon_proposer", method: "POST"},
   submitBeaconCommitteeSelections: {url: "/eth/v1/validator/beacon_committee_selections", method: "POST"},
   submitSyncCommitteeSelections: {url: "/eth/v1/validator/sync_committee_selections", method: "POST"},
-  getLiveness: {url: "/eth/v1/validator/liveness", method: "GET"},
+  getLiveness: {url: "/eth/v1/validator/liveness/{epoch}", method: "POST"},
   registerValidator: {url: "/eth/v1/validator/register_validator", method: "POST"},
 };
 
@@ -417,7 +479,20 @@ export type ReqTypes = {
   getProposerDuties: {params: {epoch: Epoch}};
   getSyncCommitteeDuties: {params: {epoch: Epoch}; body: U64Str[]};
   produceBlock: {params: {slot: number}; query: {randao_reveal: string; graffiti: string}};
-  produceBlockV2: {params: {slot: number}; query: {randao_reveal: string; graffiti: string}};
+  produceBlockV2: {params: {slot: number}; query: {randao_reveal: string; graffiti: string; fee_recipient?: string}};
+  produceBlockV3: {
+    params: {slot: number};
+    query: {
+      randao_reveal: string;
+      graffiti: string;
+      skip_randao_verification?: boolean;
+      fee_recipient?: string;
+      builder_selection?: string;
+      builder_boost_factor?: string;
+      strict_fee_recipient_check?: boolean;
+      blinded_local?: boolean;
+    };
+  };
   produceBlindedBlock: {params: {slot: number}; query: {randao_reveal: string; graffiti: string}};
   produceAttestationData: {query: {slot: number; committee_index: number}};
   produceSyncCommitteeContribution: {query: {slot: number; subcommittee_index: number; beacon_block_root: string}};
@@ -429,7 +504,7 @@ export type ReqTypes = {
   prepareBeaconProposer: {body: unknown};
   submitBeaconCommitteeSelections: {body: unknown};
   submitSyncCommitteeSelections: {body: unknown};
-  getLiveness: {query: {indices: ValidatorIndex[]; epoch: Epoch}};
+  getLiveness: {params: {epoch: Epoch}; body: U64Str[]};
   registerValidator: {body: unknown};
 };
 
@@ -473,15 +548,45 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
     {jsonCase: "eth2"}
   );
 
-  const produceBlock: ReqSerializers<Api, ReqTypes>["produceBlock"] = {
-    writeReq: (slot, randaoReveal, graffiti) => ({
+  const produceBlockV3: ReqSerializers<Api, ReqTypes>["produceBlockV3"] = {
+    writeReq: (slot, randaoReveal, graffiti, skipRandaoVerification, opts) => ({
       params: {slot},
-      query: {randao_reveal: toHexString(randaoReveal), graffiti: toGraffitiHex(graffiti)},
+      query: {
+        randao_reveal: toHexString(randaoReveal),
+        graffiti: toGraffitiHex(graffiti),
+        fee_recipient: opts?.feeRecipient,
+        skip_randao_verification: skipRandaoVerification,
+        builder_selection: opts?.builderSelection,
+        builder_boost_factor: opts?.builderBoostFactor?.toString(),
+        strict_fee_recipient_check: opts?.strictFeeRecipientCheck,
+        blinded_local: opts?.blindedLocal,
+      },
     }),
-    parseReq: ({params, query}) => [params.slot, fromHexString(query.randao_reveal), fromGraffitiHex(query.graffiti)],
+    parseReq: ({params, query}) => [
+      params.slot,
+      fromHexString(query.randao_reveal),
+      fromGraffitiHex(query.graffiti),
+      query.skip_randao_verification,
+      {
+        feeRecipient: query.fee_recipient,
+        builderSelection: query.builder_selection as BuilderSelection,
+        builderBoostFactor: parseBuilderBoostFactor(query.builder_boost_factor),
+        strictFeeRecipientCheck: query.strict_fee_recipient_check,
+        blindedLocal: query.blinded_local,
+      },
+    ],
     schema: {
       params: {slot: Schema.UintRequired},
-      query: {randao_reveal: Schema.StringRequired, graffiti: Schema.String},
+      query: {
+        randao_reveal: Schema.StringRequired,
+        graffiti: Schema.String,
+        fee_recipient: Schema.String,
+        skip_randao_verification: Schema.Boolean,
+        builder_selection: Schema.String,
+        builder_boost_factor: Schema.String,
+        strict_fee_recipient_check: Schema.Boolean,
+        blinded_local: Schema.Boolean,
+      },
     },
   };
 
@@ -512,9 +617,10 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
       },
     },
 
-    produceBlock: produceBlock,
-    produceBlockV2: produceBlock,
-    produceBlindedBlock: produceBlock,
+    produceBlock: produceBlockV3 as ReqSerializers<Api, ReqTypes>["produceBlock"],
+    produceBlockV2: produceBlockV3 as ReqSerializers<Api, ReqTypes>["produceBlockV2"],
+    produceBlockV3,
+    produceBlindedBlock: produceBlockV3 as ReqSerializers<Api, ReqTypes>["produceBlindedBlock"],
 
     produceAttestationData: {
       writeReq: (index, slot) => ({query: {slot, committee_index: index}}),
@@ -566,9 +672,12 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
       parseReq: () => [[]],
     },
     getLiveness: {
-      writeReq: (indices, epoch) => ({query: {indices, epoch}}),
-      parseReq: ({query}) => [query.indices, query.epoch],
-      schema: {query: {indices: Schema.UintArray, epoch: Schema.Uint}},
+      writeReq: (epoch, indexes) => ({params: {epoch}, body: indexes.map((i) => toU64Str(i))}),
+      parseReq: ({params, body}) => [params.epoch, body.map((i) => fromU64Str(i))],
+      schema: {
+        params: {epoch: Schema.UintRequired},
+        body: Schema.StringArray,
+      },
     },
     registerValidator: reqOnlyBody(ArrayOf(ssz.bellatrix.SignedValidatorRegistrationV1), Schema.ObjectArray),
   };
@@ -619,20 +728,60 @@ export function getReturnTypes(): ReturnTypes<Api> {
     {jsonCase: "eth2"}
   );
 
+  const produceBlockOrContents = WithBlockValues(
+    WithVersion<allForks.BeaconBlockOrContents>((fork: ForkName) =>
+      isForkBlobs(fork) ? allForksBlockContentsResSerializer(fork) : ssz[fork].BeaconBlock
+    )
+  ) as TypeJson<ProduceBlockOrContentsRes>;
+  const produceBlindedBlock = WithBlockValues(
+    WithVersion<allForks.BlindedBeaconBlock>(
+      (fork: ForkName) => ssz.allForksBlinded[isForkExecution(fork) ? fork : ForkName.bellatrix].BeaconBlock
+    )
+  ) as TypeJson<ProduceBlindedBlockRes>;
+
   return {
     getAttesterDuties: WithDependentRootExecutionOptimistic(ArrayOf(AttesterDuty)),
     getProposerDuties: WithDependentRootExecutionOptimistic(ArrayOf(ProposerDuty)),
     getSyncCommitteeDuties: ContainerDataExecutionOptimistic(ArrayOf(SyncDuty)),
-    produceBlock: WithBlockValue(ContainerData(ssz.phase0.BeaconBlock)),
-    produceBlockV2: WithBlockValue(WithVersion((fork: ForkName) => ssz[fork].BeaconBlock)),
-    produceBlindedBlock: WithBlockValue(
-      WithVersion((fork: ForkName) => {
-        if (fork === ForkName.phase0 || fork === ForkName.altair) {
-          throw Error(`No BlindedBlock for fork ${fork} previous to bellatrix`);
+
+    produceBlock: ContainerData(ssz.phase0.BeaconBlock),
+    produceBlockV2: produceBlockOrContents,
+    produceBlockV3: {
+      toJson: (data) => {
+        if (data.executionPayloadBlinded) {
+          return {
+            execution_payload_blinded: true,
+            execution_payload_source: data.executionPayloadSource,
+            ...(produceBlindedBlock.toJson(data) as Record<string, unknown>),
+          };
+        } else {
+          return {
+            execution_payload_blinded: false,
+            execution_payload_source: data.executionPayloadSource,
+            ...(produceBlockOrContents.toJson(data) as Record<string, unknown>),
+          };
         }
-        return ssz[fork].BlindedBeaconBlock;
-      })
-    ),
+      },
+      fromJson: (data) => {
+        const executionPayloadBlinded = (data as {execution_payload_blinded: boolean}).execution_payload_blinded;
+        if (executionPayloadBlinded === undefined) {
+          throw Error(`Invalid executionPayloadBlinded=${executionPayloadBlinded} for fromJson deserialization`);
+        }
+
+        // extract source from the data and assign defaults in the spec complaint manner if not present in response
+        const executionPayloadSource =
+          (data as {execution_payload_source: ProducedBlockSource}).execution_payload_source ??
+          (executionPayloadBlinded ? ProducedBlockSource.builder : ProducedBlockSource.engine);
+
+        if (executionPayloadBlinded) {
+          return {executionPayloadBlinded, executionPayloadSource, ...produceBlindedBlock.fromJson(data)};
+        } else {
+          return {executionPayloadBlinded, executionPayloadSource, ...produceBlockOrContents.fromJson(data)};
+        }
+      },
+    },
+    produceBlindedBlock,
+
     produceAttestationData: ContainerData(ssz.phase0.AttestationData),
     produceSyncCommitteeContribution: ContainerData(ssz.altair.SyncCommitteeContribution),
     getAggregatedAttestation: ContainerData(ssz.phase0.Attestation),
@@ -640,4 +789,8 @@ export function getReturnTypes(): ReturnTypes<Api> {
     submitSyncCommitteeSelections: ContainerData(ArrayOf(SyncCommitteeSelection)),
     getLiveness: jsonType("snake"),
   };
+}
+
+function parseBuilderBoostFactor(builderBoostFactorInput?: string | number | bigint): bigint | undefined {
+  return builderBoostFactorInput !== undefined ? BigInt(builderBoostFactorInput) : undefined;
 }

@@ -2,9 +2,10 @@ export * from "./stateTransition.js";
 export * from "./constants/index.js";
 export * from "./util/index.js";
 export * from "./signatureSets/index.js";
-export {BeaconStateTransitionMetrics} from "./metrics.js";
+export type {EpochTransitionStep} from "./epoch/index.js";
+export type {BeaconStateTransitionMetrics} from "./metrics.js";
 
-export {
+export type {
   CachedBeaconStatePhase0,
   CachedBeaconStateAltair,
   CachedBeaconStateBellatrix,
@@ -25,19 +26,26 @@ export {
 // Main state caches
 export {
   createCachedBeaconState,
-  BeaconStateCache,
+  loadCachedBeaconState,
+  type BeaconStateCache,
   isCachedBeaconState,
   isStateBalancesNodesPopulated,
   isStateValidatorsNodesPopulated,
 } from "./cache/stateCache.js";
-export {EpochContext, EpochContextImmutableData, createEmptyEpochContextImmutableData} from "./cache/epochContext.js";
-export {EpochProcess, beforeProcessEpoch} from "./cache/epochProcess.js";
+export {
+  EpochCache,
+  type EpochCacheImmutableData,
+  createEmptyEpochCacheImmutableData,
+  EpochCacheError,
+  EpochCacheErrorCode,
+} from "./cache/epochCache.js";
+export {type EpochTransitionCache, beforeProcessEpoch} from "./cache/epochTransitionCache.js";
 
 // Aux data-structures
-export {PubkeyIndexMap, Index2PubkeyCache} from "./cache/pubkeyCache.js";
+export {PubkeyIndexMap, type Index2PubkeyCache} from "./cache/pubkeyCache.js";
 
 export {
-  EffectiveBalanceIncrements,
+  type EffectiveBalanceIncrements,
   getEffectiveBalanceIncrementsZeroed,
   getEffectiveBalanceIncrementsWithLen,
 } from "./cache/effectiveBalanceIncrements.js";
@@ -47,10 +55,9 @@ export {isValidVoluntaryExit} from "./block/processVoluntaryExit.js";
 export {isValidBlsToExecutionChange} from "./block/processBlsToExecutionChange.js";
 export {assertValidProposerSlashing} from "./block/processProposerSlashing.js";
 export {assertValidAttesterSlashing} from "./block/processAttesterSlashing.js";
-export {ExecutionPayloadStatus, DataAvailableStatus, BlockExternalData} from "./block/externalData.js";
+export {ExecutionPayloadStatus, DataAvailableStatus, type BlockExternalData} from "./block/externalData.js";
 
 // BeaconChain, to prepare new blocks
 export {becomesNewEth1Data} from "./block/processEth1Data.js";
 // Withdrawals for new blocks
 export {getExpectedWithdrawals} from "./block/processWithdrawals.js";
-export {executionPayloadToPayloadHeader} from "./block/processExecutionPayload.js";

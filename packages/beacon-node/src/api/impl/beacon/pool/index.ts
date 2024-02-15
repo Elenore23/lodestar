@@ -1,14 +1,19 @@
 import {routes, ServerApi} from "@lodestar/api";
 import {Epoch, ssz} from "@lodestar/types";
 import {SYNC_COMMITTEE_SUBNET_SIZE} from "@lodestar/params";
-import {validateGossipAttestation} from "../../../../chain/validation/index.js";
-import {validateGossipAttesterSlashing} from "../../../../chain/validation/attesterSlashing.js";
-import {validateGossipProposerSlashing} from "../../../../chain/validation/proposerSlashing.js";
-import {validateGossipVoluntaryExit} from "../../../../chain/validation/voluntaryExit.js";
-import {validateBlsToExecutionChange} from "../../../../chain/validation/blsToExecutionChange.js";
-import {validateSyncCommitteeSigOnly} from "../../../../chain/validation/syncCommittee.js";
+import {validateApiAttestation} from "../../../../chain/validation/index.js";
+import {validateApiAttesterSlashing} from "../../../../chain/validation/attesterSlashing.js";
+import {validateApiProposerSlashing} from "../../../../chain/validation/proposerSlashing.js";
+import {validateApiVoluntaryExit} from "../../../../chain/validation/voluntaryExit.js";
+import {validateApiBlsToExecutionChange} from "../../../../chain/validation/blsToExecutionChange.js";
+import {validateApiSyncCommittee} from "../../../../chain/validation/syncCommittee.js";
 import {ApiModules} from "../../types.js";
-import {AttestationError, GossipAction, SyncCommitteeError} from "../../../../chain/errors/index.js";
+import {
+  AttestationError,
+  AttestationErrorCode,
+  GossipAction,
+  SyncCommitteeError,
+} from "../../../../chain/errors/index.js";
 import {validateGossipFnRetryUnknownRoot} from "../../../../network/processor/gossipHandlers.js";
 
 export function getBeaconPoolApi({
@@ -52,32 +57,42 @@ export function getBeaconPoolApi({
       await Promise.all(
         attestations.map(async (attestation, i) => {
           try {
+            const fork = chain.config.getForkName(chain.clock.currentSlot);
             // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-            const validateFn = () => validateGossipAttestation(chain, {attestation, serializedData: null}, null);
+            const validateFn = () => validateApiAttestation(fork, chain, {attestation, serializedData: null});
             const {slot, beaconBlockRoot} = attestation.data;
             // when a validator is configured with multiple beacon node urls, this attestation data may come from another beacon node
             // and the block hasn't been in our forkchoice since we haven't seen / processing that block
             // see https://github.com/ChainSafe/lodestar/issues/5098
             const {indexedAttestation, subnet, attDataRootHex} = await validateGossipFnRetryUnknownRoot(
               validateFn,
+              network,
               chain,
               slot,
               beaconBlockRoot
             );
 
-            if (network.attnetsService.shouldProcess(subnet, slot)) {
+            if (network.shouldAggregate(subnet, slot)) {
               const insertOutcome = chain.attestationPool.add(attestation, attDataRootHex);
               metrics?.opPool.attestationPoolInsertOutcome.inc({insertOutcome});
             }
-            const sentPeers = await network.gossip.publishBeaconAttestation(attestation, subnet);
-            metrics?.submitUnaggregatedAttestation(seenTimestampSec, indexedAttestation, subnet, sentPeers);
+
+            chain.emitter.emit(routes.events.EventType.attestation, attestation);
+
+            const sentPeers = await network.publishBeaconAttestation(attestation, subnet);
+            metrics?.onPoolSubmitUnaggregatedAttestation(seenTimestampSec, indexedAttestation, subnet, sentPeers);
           } catch (e) {
+            const logCtx = {slot: attestation.data.slot, index: attestation.data.index};
+
+            if (e instanceof AttestationError && e.type.code === AttestationErrorCode.ATTESTATION_ALREADY_KNOWN) {
+              logger.debug("Ignoring known attestation", logCtx);
+              // Attestations might already be published by another node as part of a fallback setup or DVT cluster
+              // and can reach our node by gossip before the api. The error can be ignored and should not result in a 500 response.
+              return;
+            }
+
             errors.push(e as Error);
-            logger.error(
-              `Error on submitPoolAttestations [${i}]`,
-              {slot: attestation.data.slot, index: attestation.data.index},
-              e as Error
-            );
+            logger.error(`Error on submitPoolAttestations [${i}]`, logCtx, e as Error);
             if (e instanceof AttestationError && e.action === GossipAction.REJECT) {
               chain.persistInvalidSszValue(ssz.phase0.Attestation, attestation, "api_reject");
             }
@@ -93,21 +108,22 @@ export function getBeaconPoolApi({
     },
 
     async submitPoolAttesterSlashings(attesterSlashing) {
-      await validateGossipAttesterSlashing(chain, attesterSlashing);
+      await validateApiAttesterSlashing(chain, attesterSlashing);
       chain.opPool.insertAttesterSlashing(attesterSlashing);
-      await network.gossip.publishAttesterSlashing(attesterSlashing);
+      await network.publishAttesterSlashing(attesterSlashing);
     },
 
     async submitPoolProposerSlashings(proposerSlashing) {
-      await validateGossipProposerSlashing(chain, proposerSlashing);
+      await validateApiProposerSlashing(chain, proposerSlashing);
       chain.opPool.insertProposerSlashing(proposerSlashing);
-      await network.gossip.publishProposerSlashing(proposerSlashing);
+      await network.publishProposerSlashing(proposerSlashing);
     },
 
     async submitPoolVoluntaryExit(voluntaryExit) {
-      await validateGossipVoluntaryExit(chain, voluntaryExit);
+      await validateApiVoluntaryExit(chain, voluntaryExit);
       chain.opPool.insertVoluntaryExit(voluntaryExit);
-      await network.gossip.publishVoluntaryExit(voluntaryExit);
+      chain.emitter.emit(routes.events.EventType.voluntaryExit, voluntaryExit);
+      await network.publishVoluntaryExit(voluntaryExit);
     },
 
     async submitPoolBlsToExecutionChange(blsToExecutionChanges) {
@@ -117,11 +133,14 @@ export function getBeaconPoolApi({
         blsToExecutionChanges.map(async (blsToExecutionChange, i) => {
           try {
             // Ignore even if the change exists and reprocess
-            await validateBlsToExecutionChange(chain, blsToExecutionChange, true);
+            await validateApiBlsToExecutionChange(chain, blsToExecutionChange);
             const preCapella = chain.clock.currentEpoch < chain.config.CAPELLA_FORK_EPOCH;
             chain.opPool.insertBlsToExecutionChange(blsToExecutionChange, preCapella);
+
+            chain.emitter.emit(routes.events.EventType.blsToExecutionChange, blsToExecutionChange);
+
             if (!preCapella) {
-              await network.gossip.publishBlsToExecutionChange(blsToExecutionChange);
+              await network.publishBlsToExecutionChange(blsToExecutionChange);
             }
           } catch (e) {
             errors.push(e as Error);
@@ -174,7 +193,7 @@ export function getBeaconPoolApi({
 
             // Verify signature only, all other data is very likely to be correct, since the `signature` object is created by this node.
             // Worst case if `signature` is not valid, gossip peers will drop it and slightly downscore us.
-            await validateSyncCommitteeSigOnly(chain, state, signature);
+            await validateApiSyncCommittee(chain, state, signature);
 
             // The same validator can appear multiple times in the sync committee. It can appear multiple times per
             // subnet even. First compute on which subnet the signature must be broadcasted to.
@@ -193,9 +212,7 @@ export function getBeaconPoolApi({
             }
 
             // TODO: Broadcast at once to all topics
-            await Promise.all(
-              subnets.map(async (subnet) => network.gossip.publishSyncCommitteeSignature(signature, subnet))
-            );
+            await Promise.all(subnets.map(async (subnet) => network.publishSyncCommitteeSignature(signature, subnet)));
           } catch (e) {
             // TODO: gossipsub should allow publishing same message to different topics
             // https://github.com/ChainSafe/js-libp2p-gossipsub/issues/272
@@ -217,7 +234,7 @@ export function getBeaconPoolApi({
       );
 
       if (errors.length > 1) {
-        throw Error("Multiple errors on publishAggregateAndProofs\n" + errors.map((e) => e.message).join("\n"));
+        throw Error("Multiple errors on submitPoolSyncCommitteeSignatures\n" + errors.map((e) => e.message).join("\n"));
       } else if (errors.length === 1) {
         throw errors[0];
       }

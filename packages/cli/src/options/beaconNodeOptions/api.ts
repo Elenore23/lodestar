@@ -4,13 +4,15 @@ import {CliCommandOptions} from "../../util/index.js";
 const enabledAll = "*";
 
 export type ApiArgs = {
-  "api.maxGindicesInProof": number;
-  "rest.namespace": string[];
-  "rest.cors": string;
+  "api.maxGindicesInProof"?: number;
+  "rest.namespace"?: string[];
+  "rest.cors"?: string;
   rest: boolean;
-  "rest.address": string;
+  "rest.address"?: string;
   "rest.port": number;
-  "rest.bodyLimit": number;
+  "rest.headerLimit"?: number;
+  "rest.bodyLimit"?: number;
+  "rest.swaggerUI"?: boolean;
 };
 
 export function parseArgs(args: ApiArgs): IBeaconNodeOptions["api"] {
@@ -22,7 +24,9 @@ export function parseArgs(args: ApiArgs): IBeaconNodeOptions["api"] {
       enabled: args["rest"],
       address: args["rest.address"],
       port: args["rest.port"],
+      headerLimit: args["rest.headerLimit"],
       bodyLimit: args["rest.bodyLimit"],
+      swaggerUI: args["rest.swaggerUI"],
     },
   };
 }
@@ -31,7 +35,7 @@ export const options: CliCommandOptions<ApiArgs> = {
   rest: {
     type: "boolean",
     description: "Enable/disable HTTP API",
-    defaultDescription: String(defaultOptions.api.rest.enabled),
+    default: defaultOptions.api.rest.enabled,
     group: "api",
   },
 
@@ -74,12 +78,24 @@ export const options: CliCommandOptions<ApiArgs> = {
   "rest.port": {
     type: "number",
     description: "Set port for HTTP API",
-    defaultDescription: String(defaultOptions.api.rest.port),
+    default: defaultOptions.api.rest.port,
     group: "api",
+  },
+  "rest.headerLimit": {
+    hidden: true,
+    type: "number",
+    description: "Defines the maximum length of request headers, in bytes, the server is allowed to accept",
   },
   "rest.bodyLimit": {
     hidden: true,
     type: "number",
     description: "Defines the maximum payload, in bytes, the server is allowed to accept",
+  },
+
+  "rest.swaggerUI": {
+    type: "boolean",
+    description: "Enable Swagger UI for API exploration at http://{address}:{port}/documentation",
+    default: Boolean(defaultOptions.api.rest.swaggerUI),
+    group: "api",
   },
 };

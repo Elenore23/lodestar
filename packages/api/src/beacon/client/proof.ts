@@ -1,5 +1,5 @@
+import {CompactMultiProof, ProofType, deserializeProof} from "@chainsafe/persistent-merkle-tree";
 import {ChainForkConfig} from "@lodestar/config";
-import {CompactMultiProof, deserializeProof, ProofType} from "@chainsafe/persistent-merkle-tree";
 import {Api, ReqTypes, routesData, getReqSerializers} from "../routes/proof.js";
 import {IHttpClient, getFetchOptsSerializers, HttpError} from "../../utils/client/index.js";
 import {HttpStatusCode} from "../../utils/client/httpStatusCode.js";

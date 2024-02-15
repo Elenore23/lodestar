@@ -1,37 +1,46 @@
-import {RootHex, allForks, Wei} from "@lodestar/types";
+import {Root, RootHex, allForks, Wei} from "@lodestar/types";
 import {SLOTS_PER_EPOCH, ForkName, ForkSeq} from "@lodestar/params";
-
-import {ErrorJsonRpcResponse, HttpRpcError} from "../../eth1/provider/jsonRpcHttpClient.js";
-import {IJsonRpcHttpClient, ReqOpts} from "../../eth1/provider/jsonRpcHttpClient.js";
+import {Logger} from "@lodestar/logger";
+import {
+  ErrorJsonRpcResponse,
+  HttpRpcError,
+  IJsonRpcHttpClient,
+  JsonRpcHttpClientEvent,
+  ReqOpts,
+} from "../../eth1/provider/jsonRpcHttpClient.js";
 import {Metrics} from "../../metrics/index.js";
 import {JobItemQueue} from "../../util/queue/index.js";
 import {EPOCHS_PER_BATCH} from "../../sync/constants.js";
 import {numToQuantity} from "../../eth1/provider/utils.js";
 import {
-  ExecutePayloadStatus,
+  ExecutionPayloadStatus,
   ExecutePayloadResponse,
   IExecutionEngine,
   PayloadId,
   PayloadAttributes,
-  TransitionConfigurationV1,
   BlobsBundle,
+  VersionedHashes,
+  ExecutionEngineState,
 } from "./interface.js";
 import {PayloadIdCache} from "./payloadIdCache.js";
 import {
   EngineApiRpcParamTypes,
   EngineApiRpcReturnTypes,
-  parseBlobsBundle,
   parseExecutionPayload,
   serializeExecutionPayload,
+  serializeVersionedHashes,
   serializePayloadAttributes,
+  serializeBeaconBlockRoot,
   ExecutionPayloadBody,
   assertReqSizeLimit,
   deserializeExecutionPayloadBody,
 } from "./types.js";
+import {getExecutionEngineState} from "./utils.js";
 
 export type ExecutionEngineModules = {
   signal: AbortSignal;
   metrics?: Metrics | null;
+  logger: Logger;
 };
 
 export type ExecutionEngineHttpOpts = {
@@ -46,6 +55,14 @@ export type ExecutionEngineHttpOpts = {
    * +-5 seconds interval.
    */
   jwtSecretHex?: string;
+  /**
+   * An identifier string passed as CLI arg that will be set in `id` field of jwt claims
+   */
+  jwtId?: string;
+  /**
+   * A version string that will be set in `clv` field of jwt claims
+   */
+  jwtVersion?: string;
 };
 
 export const defaultExecutionEngineHttpOpts: ExecutionEngineHttpOpts = {
@@ -70,7 +87,6 @@ const QUEUE_MAX_LENGTH = EPOCHS_PER_BATCH * SLOTS_PER_EPOCH * 2;
 const notifyNewPayloadOpts: ReqOpts = {routeId: "notifyNewPayload"};
 const forkchoiceUpdatedV1Opts: ReqOpts = {routeId: "forkchoiceUpdated"};
 const getPayloadOpts: ReqOpts = {routeId: "getPayload"};
-const exchageTransitionConfigOpts: ReqOpts = {routeId: "exchangeTransitionConfiguration"};
 
 /**
  * based on Ethereum JSON-RPC API and inherits the following properties of this standard:
@@ -82,6 +98,13 @@ const exchageTransitionConfigOpts: ReqOpts = {routeId: "exchangeTransitionConfig
  * https://github.com/ethereum/execution-apis/blob/v1.0.0-alpha.1/src/engine/interop/specification.md
  */
 export class ExecutionEngineHttp implements IExecutionEngine {
+  private logger: Logger;
+
+  // The default state is ONLINE, it will be updated to SYNCING once we receive the first payload
+  // This assumption is better than the OFFLINE state, since we can't be sure if the EL is offline and being offline may trigger some notifications
+  // It's safer to to avoid false positives and assume that the EL is syncing until we receive the first payload
+  private state: ExecutionEngineState = ExecutionEngineState.ONLINE;
+
   readonly payloadIdCache = new PayloadIdCache();
   /**
    * A queue to serialize the fcUs and newPayloads calls:
@@ -101,12 +124,24 @@ export class ExecutionEngineHttp implements IExecutionEngine {
     );
   };
 
-  constructor(private readonly rpc: IJsonRpcHttpClient, {metrics, signal}: ExecutionEngineModules) {
+  constructor(
+    private readonly rpc: IJsonRpcHttpClient,
+    {metrics, signal, logger}: ExecutionEngineModules
+  ) {
     this.rpcFetchQueue = new JobItemQueue<[EngineRequest], EngineResponse>(
       this.jobQueueProcessor,
       {maxLength: QUEUE_MAX_LENGTH, maxConcurrency: 1, noYieldIfOneItem: true, signal},
       metrics?.engineHttpProcessorQueue
     );
+    this.logger = logger;
+
+    this.rpc.emitter.on(JsonRpcHttpClientEvent.ERROR, ({error}) => {
+      this.updateEngineState(getExecutionEngineState({payloadError: error, oldState: this.state}));
+    });
+
+    this.rpc.emitter.on(JsonRpcHttpClientEvent.RESPONSE, () => {
+      this.updateEngineState(getExecutionEngineState({targetState: ExecutionEngineState.ONLINE, oldState: this.state}));
+    });
   }
 
   /**
@@ -134,49 +169,78 @@ export class ExecutionEngineHttp implements IExecutionEngine {
    *
    * If any of the above fails due to errors unrelated to the normal processing flow of the method, client software MUST respond with an error object.
    */
-  async notifyNewPayload(fork: ForkName, executionPayload: allForks.ExecutionPayload): Promise<ExecutePayloadResponse> {
+  async notifyNewPayload(
+    fork: ForkName,
+    executionPayload: allForks.ExecutionPayload,
+    versionedHashes?: VersionedHashes,
+    parentBlockRoot?: Root
+  ): Promise<ExecutePayloadResponse> {
     const method =
       ForkSeq[fork] >= ForkSeq.deneb
         ? "engine_newPayloadV3"
         : ForkSeq[fork] >= ForkSeq.capella
         ? "engine_newPayloadV2"
         : "engine_newPayloadV1";
+
     const serializedExecutionPayload = serializeExecutionPayload(fork, executionPayload);
-    const {status, latestValidHash, validationError} = await (
-      this.rpcFetchQueue.push({
+
+    let engineRequest: EngineRequest;
+    if (ForkSeq[fork] >= ForkSeq.deneb) {
+      if (versionedHashes === undefined) {
+        throw Error(`versionedHashes required in notifyNewPayload for fork=${fork}`);
+      }
+      if (parentBlockRoot === undefined) {
+        throw Error(`parentBlockRoot required in notifyNewPayload for fork=${fork}`);
+      }
+
+      const serializedVersionedHashes = serializeVersionedHashes(versionedHashes);
+      const parentBeaconBlockRoot = serializeBeaconBlockRoot(parentBlockRoot);
+
+      const method = "engine_newPayloadV3";
+      engineRequest = {
+        method,
+        params: [serializedExecutionPayload, serializedVersionedHashes, parentBeaconBlockRoot],
+        methodOpts: notifyNewPayloadOpts,
+      };
+    } else {
+      const method = ForkSeq[fork] >= ForkSeq.capella ? "engine_newPayloadV2" : "engine_newPayloadV1";
+      engineRequest = {
         method,
         params: [serializedExecutionPayload],
         methodOpts: notifyNewPayloadOpts,
-      }) as Promise<EngineApiRpcReturnTypes[typeof method]>
-    )
-      // If there are errors by EL like connection refused, internal error, they need to be
-      // treated separate from being INVALID. For now, just pass the error upstream.
-      .catch((e: Error): EngineApiRpcReturnTypes[typeof method] => {
-        if (e instanceof HttpRpcError || e instanceof ErrorJsonRpcResponse) {
-          return {status: ExecutePayloadStatus.ELERROR, latestValidHash: null, validationError: e.message};
-        } else {
-          return {status: ExecutePayloadStatus.UNAVAILABLE, latestValidHash: null, validationError: e.message};
-        }
-      });
+      };
+    }
+
+    const {status, latestValidHash, validationError} = await (
+      this.rpcFetchQueue.push(engineRequest) as Promise<EngineApiRpcReturnTypes[typeof method]>
+    ).catch((e: Error) => {
+      if (e instanceof HttpRpcError || e instanceof ErrorJsonRpcResponse) {
+        return {status: ExecutionPayloadStatus.ELERROR, latestValidHash: null, validationError: e.message};
+      } else {
+        return {status: ExecutionPayloadStatus.UNAVAILABLE, latestValidHash: null, validationError: e.message};
+      }
+    });
+
+    this.updateEngineState(getExecutionEngineState({payloadStatus: status, oldState: this.state}));
 
     switch (status) {
-      case ExecutePayloadStatus.VALID:
+      case ExecutionPayloadStatus.VALID:
         return {status, latestValidHash: latestValidHash ?? "0x0", validationError: null};
 
-      case ExecutePayloadStatus.INVALID:
+      case ExecutionPayloadStatus.INVALID:
         // As per latest specs if latestValidHash can be null and it would mean only
         // invalidate this block
         return {status, latestValidHash, validationError};
 
-      case ExecutePayloadStatus.SYNCING:
-      case ExecutePayloadStatus.ACCEPTED:
+      case ExecutionPayloadStatus.SYNCING:
+      case ExecutionPayloadStatus.ACCEPTED:
         return {status, latestValidHash: null, validationError: null};
 
-      case ExecutePayloadStatus.INVALID_BLOCK_HASH:
+      case ExecutionPayloadStatus.INVALID_BLOCK_HASH:
         return {status, latestValidHash: null, validationError: validationError ?? "Malformed block"};
 
-      case ExecutePayloadStatus.UNAVAILABLE:
-      case ExecutePayloadStatus.ELERROR:
+      case ExecutionPayloadStatus.UNAVAILABLE:
+      case ExecutionPayloadStatus.ELERROR:
         return {
           status,
           latestValidHash: null,
@@ -185,7 +249,7 @@ export class ExecutionEngineHttp implements IExecutionEngine {
 
       default:
         return {
-          status: ExecutePayloadStatus.ELERROR,
+          status: ExecutionPayloadStatus.ELERROR,
           latestValidHash: null,
           validationError: `Invalid EL status on executePayload: ${status}`,
         };
@@ -231,7 +295,12 @@ export class ExecutionEngineHttp implements IExecutionEngine {
   ): Promise<PayloadId | null> {
     // Once on capella, should this need to be permanently switched to v2 when payload attrs
     // not provided
-    const method = ForkSeq[fork] >= ForkSeq.capella ? "engine_forkchoiceUpdatedV2" : "engine_forkchoiceUpdatedV1";
+    const method =
+      ForkSeq[fork] >= ForkSeq.deneb
+        ? "engine_forkchoiceUpdatedV3"
+        : ForkSeq[fork] >= ForkSeq.capella
+        ? "engine_forkchoiceUpdatedV2"
+        : "engine_forkchoiceUpdatedV1";
     const payloadAttributesRpc = payloadAttributes ? serializePayloadAttributes(payloadAttributes) : undefined;
     // If we are just fcUing and not asking execution for payload, retry is not required
     // and we can move on, as the next fcU will be issued soon on the new slot
@@ -244,14 +313,15 @@ export class ExecutionEngineHttp implements IExecutionEngine {
       methodOpts: fcUReqOpts,
     }) as Promise<EngineApiRpcReturnTypes[typeof method]>;
 
-    const response = await request;
     const {
       payloadStatus: {status, latestValidHash: _latestValidHash, validationError},
       payloadId,
-    } = response;
+    } = await request;
+
+    this.updateEngineState(getExecutionEngineState({payloadStatus: status, oldState: this.state}));
 
     switch (status) {
-      case ExecutePayloadStatus.VALID:
+      case ExecutionPayloadStatus.VALID:
         // if payloadAttributes are provided, a valid payloadId is expected
         if (payloadAttributesRpc) {
           if (!payloadId || payloadId === "0x") {
@@ -263,7 +333,7 @@ export class ExecutionEngineHttp implements IExecutionEngine {
         }
         return payloadId !== "0x" ? payloadId : null;
 
-      case ExecutePayloadStatus.SYNCING:
+      case ExecutionPayloadStatus.SYNCING:
         // Throw error on syncing if requested to produce a block, else silently ignore
         if (payloadAttributes) {
           throw Error("Execution Layer Syncing");
@@ -271,7 +341,7 @@ export class ExecutionEngineHttp implements IExecutionEngine {
           return null;
         }
 
-      case ExecutePayloadStatus.INVALID:
+      case ExecutionPayloadStatus.INVALID:
         throw Error(
           `Invalid ${payloadAttributes ? "prepare payload" : "forkchoice request"}, validationError=${
             validationError ?? ""
@@ -293,7 +363,12 @@ export class ExecutionEngineHttp implements IExecutionEngine {
   async getPayload(
     fork: ForkName,
     payloadId: PayloadId
-  ): Promise<{executionPayload: allForks.ExecutionPayload; blockValue: Wei}> {
+  ): Promise<{
+    executionPayload: allForks.ExecutionPayload;
+    executionPayloadValue: Wei;
+    blobsBundle?: BlobsBundle;
+    shouldOverrideBuilder?: boolean;
+  }> {
     const method =
       ForkSeq[fork] >= ForkSeq.deneb
         ? "engine_getPayloadV3"
@@ -313,41 +388,6 @@ export class ExecutionEngineHttp implements IExecutionEngine {
     return parseExecutionPayload(fork, payloadResponse);
   }
 
-  async getBlobsBundle(payloadId: PayloadId): Promise<BlobsBundle> {
-    const method = "engine_getBlobsBundleV1";
-    const blobsBundle = await this.rpc.fetchWithRetries<
-      EngineApiRpcReturnTypes[typeof method],
-      EngineApiRpcParamTypes[typeof method]
-    >(
-      {
-        method,
-        params: [payloadId],
-      },
-      getPayloadOpts
-    );
-
-    return parseBlobsBundle(blobsBundle);
-  }
-
-  /**
-   * `engine_exchangeTransitionConfigurationV1`
-   *
-   * An api method for EL<>CL transition config matching and heartbeat
-   */
-
-  async exchangeTransitionConfigurationV1(
-    transitionConfiguration: TransitionConfigurationV1
-  ): Promise<TransitionConfigurationV1> {
-    const method = "engine_exchangeTransitionConfigurationV1";
-    return this.rpc.fetchWithRetries<EngineApiRpcReturnTypes[typeof method], EngineApiRpcParamTypes[typeof method]>(
-      {
-        method,
-        params: [transitionConfiguration],
-      },
-      exchageTransitionConfigOpts
-    );
-  }
-
   async prunePayloadIdCache(): Promise<void> {
     this.payloadIdCache.prune();
   }
@@ -358,10 +398,7 @@ export class ExecutionEngineHttp implements IExecutionEngine {
     const response = await this.rpc.fetchWithRetries<
       EngineApiRpcReturnTypes[typeof method],
       EngineApiRpcParamTypes[typeof method]
-    >({
-      method,
-      params: blockHashes,
-    });
+    >({method, params: [blockHashes]});
     return response.map(deserializeExecutionPayloadBody);
   }
 
@@ -376,11 +413,38 @@ export class ExecutionEngineHttp implements IExecutionEngine {
     const response = await this.rpc.fetchWithRetries<
       EngineApiRpcReturnTypes[typeof method],
       EngineApiRpcParamTypes[typeof method]
-    >({
-      method,
-      params: [start, count],
-    });
+    >({method, params: [start, count]});
     return response.map(deserializeExecutionPayloadBody);
+  }
+
+  getState(): ExecutionEngineState {
+    return this.state;
+  }
+
+  private updateEngineState(newState: ExecutionEngineState): void {
+    const oldState = this.state;
+
+    if (oldState === newState) return;
+
+    switch (newState) {
+      case ExecutionEngineState.ONLINE:
+        this.logger.info("Execution client became online", {oldState, newState});
+        break;
+      case ExecutionEngineState.OFFLINE:
+        this.logger.error("Execution client went offline", {oldState, newState});
+        break;
+      case ExecutionEngineState.SYNCED:
+        this.logger.info("Execution client is synced", {oldState, newState});
+        break;
+      case ExecutionEngineState.SYNCING:
+        this.logger.warn("Execution client is syncing", {oldState, newState});
+        break;
+      case ExecutionEngineState.AUTH_FAILED:
+        this.logger.error("Execution client authentication failed", {oldState, newState});
+        break;
+    }
+
+    this.state = newState;
   }
 }
 

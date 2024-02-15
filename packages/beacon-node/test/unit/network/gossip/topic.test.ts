@@ -1,4 +1,4 @@
-import {expect} from "chai";
+import {describe, it, expect} from "vitest";
 import {ForkName} from "@lodestar/params";
 import {GossipType, GossipEncoding, GossipTopicMap} from "../../../../src/network/gossip/index.js";
 import {parseGossipTopic, stringifyGossipTopic} from "../../../../src/network/gossip/topic.js";
@@ -15,10 +15,10 @@ describe("network / gossip / topic", function () {
         topicStr: "/eth2/18ae4ccb/beacon_block/ssz_snappy",
       },
     ],
-    [GossipType.beacon_block_and_blobs_sidecar]: [
+    [GossipType.blob_sidecar]: [
       {
-        topic: {type: GossipType.beacon_block_and_blobs_sidecar, fork: ForkName.deneb, encoding},
-        topicStr: "/eth2/46acb19a/beacon_block_and_blobs_sidecar/ssz_snappy",
+        topic: {type: GossipType.blob_sidecar, index: 1, fork: ForkName.deneb, encoding},
+        topicStr: "/eth2/46acb19a/blob_sidecar_1/ssz_snappy",
       },
     ],
     [GossipType.beacon_aggregate_and_proof]: [
@@ -89,12 +89,12 @@ describe("network / gossip / topic", function () {
     for (const {topic, topicStr} of topics) {
       it(`should encode gossip topic ${topic.type} ${topic.fork} ${topic.encoding}`, async () => {
         const topicStrRes = stringifyGossipTopic(config, topic);
-        expect(topicStrRes).to.equal(topicStr);
+        expect(topicStrRes).toBe(topicStr);
       });
 
       it(`should decode gossip topic ${topicStr}`, async () => {
         const outputTopic = parseGossipTopic(config, topicStr);
-        expect(outputTopic).to.deep.equal(topic);
+        expect(outputTopic).toEqual(topic);
       });
     }
   }
@@ -116,7 +116,8 @@ describe("network / gossip / topic", function () {
   ];
   for (const topicStr of badTopicStrings) {
     it(`should fail to decode invalid gossip topic string ${topicStr}`, async () => {
-      expect(() => parseGossipTopic(config, topicStr), topicStr).to.throw();
+      // topicStr
+      expect(() => parseGossipTopic(config, topicStr)).toThrow();
     });
   }
 });

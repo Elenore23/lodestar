@@ -1,24 +1,30 @@
-import {computeEpochAtSlot, computeSigningRoot, computeStartSlotAtEpoch} from "@lodestar/state-transition";
+import {BitArray, toHexString} from "@chainsafe/ssz";
+import {
+  computeEpochAtSlot,
+  computeSigningRoot,
+  computeStartSlotAtEpoch,
+  getShufflingDecisionBlock,
+} from "@lodestar/state-transition";
 import {ProtoBlock, IForkChoice, ExecutionStatus} from "@lodestar/fork-choice";
 import {DOMAIN_BEACON_ATTESTER} from "@lodestar/params";
 import {phase0, Slot, ssz} from "@lodestar/types";
-import {BitArray, toHexString} from "@chainsafe/ssz";
-import {config} from "@lodestar/config/default";
-import {BeaconConfig} from "@lodestar/config";
-import {IBeaconChain} from "../../../src/chain/index.js";
-import {IStateRegenerator} from "../../../src/chain/regen/index.js";
-import {ZERO_HASH, ZERO_HASH_HEX} from "../../../src/constants/index.js";
 import {
   generateTestCachedBeaconStateOnlyValidators,
   getSecretKeyFromIndexCached,
+  // eslint-disable-next-line import/no-relative-packages
 } from "../../../../state-transition/test/perf/util.js";
+import {IBeaconChain} from "../../../src/chain/index.js";
+import {IStateRegenerator} from "../../../src/chain/regen/index.js";
+import {ZERO_HASH, ZERO_HASH_HEX} from "../../../src/constants/index.js";
 import {SeenAttesters} from "../../../src/chain/seenCache/index.js";
-import {BlsSingleThreadVerifier} from "../../../src/chain/bls/index.js";
+import {BlsMultiThreadWorkerPool, BlsSingleThreadVerifier} from "../../../src/chain/bls/index.js";
 import {signCached} from "../cache.js";
 import {ClockStatic} from "../clock.js";
 import {SeenAggregatedAttestations} from "../../../src/chain/seenCache/seenAggregateAndProof.js";
 import {SeenAttestationDatas} from "../../../src/chain/seenCache/seenAttestationData.js";
 import {defaultChainOptions} from "../../../src/chain/options.js";
+import {testLogger} from "../logger.js";
+import {ShufflingCache} from "../../../src/chain/shufflingCache.js";
 
 export type AttestationValidDataOpts = {
   currentSlot?: Slot;
@@ -27,6 +33,7 @@ export type AttestationValidDataOpts = {
   bitIndex?: number;
   targetRoot?: Uint8Array;
   beaconBlockRoot?: Uint8Array;
+  blsVerifyAllMainThread?: boolean;
   state: ReturnType<typeof generateTestCachedBeaconStateOnlyValidators>;
 };
 
@@ -45,6 +52,7 @@ export function getAttestationValidData(opts: AttestationValidDataOpts): {
   const bitIndex = opts.bitIndex ?? 0;
   const targetRoot = opts.targetRoot ?? ZERO_HASH;
   const beaconBlockRoot = opts.beaconBlockRoot ?? ZERO_HASH;
+  const blsVerifyAllMainThread = opts.blsVerifyAllMainThread ?? true;
   // Create cached state
   const state = opts.state;
 
@@ -69,6 +77,12 @@ export function getAttestationValidData(opts: AttestationValidDataOpts): {
 
     ...{executionPayloadBlockHash: null, executionStatus: ExecutionStatus.PreMerge},
   };
+
+  const shufflingCache = new ShufflingCache();
+  shufflingCache.processState(state, state.epochCtx.currentShuffling.epoch);
+  shufflingCache.processState(state, state.epochCtx.nextShuffling.epoch);
+  const dependentRoot = getShufflingDecisionBlock(state, state.epochCtx.currentShuffling.epoch);
+
   const forkChoice = {
     getBlock: (root) => {
       if (!ssz.Root.equals(root, beaconBlockRoot)) return null;
@@ -78,6 +92,7 @@ export function getAttestationValidData(opts: AttestationValidDataOpts): {
       if (rootHex !== toHexString(beaconBlockRoot)) return null;
       return headBlock;
     },
+    getDependentRoot: () => dependentRoot,
   } as Partial<IForkChoice> as IForkChoice;
 
   const committeeIndices = state.epochCtx.getBeaconCommittee(attSlot, attIndex);
@@ -113,19 +128,24 @@ export function getAttestationValidData(opts: AttestationValidDataOpts): {
   // Add state to regen
   const regen = {
     getState: async () => state,
+    // TODO: remove this once we have a better way to get state
+    getStateSync: () => state,
   } as Partial<IStateRegenerator> as IStateRegenerator;
 
   const chain = {
     clock,
-    config: config as BeaconConfig,
+    config: state.config,
     forkChoice,
     regen,
     seenAttesters: new SeenAttesters(),
     seenAggregatedAttestations: new SeenAggregatedAttestations(null),
     seenAttestationDatas: new SeenAttestationDatas(null, 0, 0),
-    bls: new BlsSingleThreadVerifier({metrics: null}),
+    bls: blsVerifyAllMainThread
+      ? new BlsSingleThreadVerifier({metrics: null})
+      : new BlsMultiThreadWorkerPool({}, {logger: testLogger(), metrics: null}),
     waitForBlock: () => Promise.resolve(false),
     index2pubkey: state.epochCtx.index2pubkey,
+    shufflingCache,
     opts: defaultChainOptions,
   } as Partial<IBeaconChain> as IBeaconChain;
 

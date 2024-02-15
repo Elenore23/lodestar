@@ -1,11 +1,14 @@
-import {phase0, Slot, allForks, RootHex} from "@lodestar/types";
-import {IForkChoice} from "@lodestar/fork-choice";
-import {CachedBeaconStateAllForks, computeEpochAtSlot} from "@lodestar/state-transition";
 import {toHexString} from "@chainsafe/ssz";
-import {CheckpointStateCache, StateContextCache, toCheckpointHex} from "../stateCache/index.js";
+import {phase0, Slot, allForks, RootHex, Epoch} from "@lodestar/types";
+import {IForkChoice, ProtoBlock} from "@lodestar/fork-choice";
+import {CachedBeaconStateAllForks, computeEpochAtSlot} from "@lodestar/state-transition";
+import {Logger} from "@lodestar/utils";
+import {routes} from "@lodestar/api";
+import {CheckpointHex, toCheckpointHex} from "../stateCache/index.js";
 import {Metrics} from "../../metrics/index.js";
 import {JobItemQueue} from "../../util/queue/index.js";
-import {IStateRegenerator, RegenCaller, RegenFnName, StateCloneOpts} from "./interface.js";
+import {BlockStateCache, CheckpointStateCache} from "../stateCache/types.js";
+import {IStateRegenerator, IStateRegeneratorInternal, RegenCaller, RegenFnName, StateCloneOpts} from "./interface.js";
 import {StateRegenerator, RegenModules} from "./regen.js";
 import {RegenError, RegenErrorCode} from "./errors.js";
 
@@ -15,10 +18,11 @@ const REGEN_CAN_ACCEPT_WORK_THRESHOLD = 16;
 
 type QueuedStateRegeneratorModules = RegenModules & {
   signal: AbortSignal;
+  logger: Logger;
 };
 
-type RegenRequestKey = keyof IStateRegenerator;
-type RegenRequestByKey = {[K in RegenRequestKey]: {key: K; args: Parameters<IStateRegenerator[K]>}};
+type RegenRequestKey = keyof IStateRegeneratorInternal;
+type RegenRequestByKey = {[K in RegenRequestKey]: {key: K; args: Parameters<IStateRegeneratorInternal[K]>}};
 export type RegenRequest = RegenRequestByKey[RegenRequestKey];
 
 /**
@@ -28,12 +32,13 @@ export type RegenRequest = RegenRequestByKey[RegenRequestKey];
  */
 export class QueuedStateRegenerator implements IStateRegenerator {
   readonly jobQueue: JobItemQueue<[RegenRequest], CachedBeaconStateAllForks>;
-  private regen: StateRegenerator;
+  private readonly regen: StateRegenerator;
 
-  private forkChoice: IForkChoice;
-  private stateCache: StateContextCache;
-  private checkpointStateCache: CheckpointStateCache;
-  private metrics: Metrics | null;
+  private readonly forkChoice: IForkChoice;
+  private readonly stateCache: BlockStateCache;
+  private readonly checkpointStateCache: CheckpointStateCache;
+  private readonly metrics: Metrics | null;
+  private readonly logger: Logger;
 
   constructor(modules: QueuedStateRegeneratorModules) {
     this.regen = new StateRegenerator(modules);
@@ -46,10 +51,78 @@ export class QueuedStateRegenerator implements IStateRegenerator {
     this.stateCache = modules.stateCache;
     this.checkpointStateCache = modules.checkpointStateCache;
     this.metrics = modules.metrics;
+    this.logger = modules.logger;
   }
 
   canAcceptWork(): boolean {
     return this.jobQueue.jobLen < REGEN_CAN_ACCEPT_WORK_THRESHOLD;
+  }
+
+  dropCache(): void {
+    this.stateCache.clear();
+    this.checkpointStateCache.clear();
+  }
+
+  dumpCacheSummary(): routes.lodestar.StateCacheItem[] {
+    return [...this.stateCache.dumpSummary(), ...this.checkpointStateCache.dumpSummary()];
+  }
+
+  getStateSync(stateRoot: RootHex): CachedBeaconStateAllForks | null {
+    return this.stateCache.get(stateRoot);
+  }
+
+  getCheckpointStateSync(cp: CheckpointHex): CachedBeaconStateAllForks | null {
+    return this.checkpointStateCache.get(cp);
+  }
+
+  getClosestHeadState(head: ProtoBlock): CachedBeaconStateAllForks | null {
+    return this.checkpointStateCache.getLatest(head.blockRoot, Infinity) || this.stateCache.get(head.stateRoot);
+  }
+
+  pruneOnCheckpoint(finalizedEpoch: Epoch, justifiedEpoch: Epoch, headStateRoot: RootHex): void {
+    this.checkpointStateCache.prune(finalizedEpoch, justifiedEpoch);
+    this.stateCache.prune(headStateRoot);
+  }
+
+  pruneOnFinalized(finalizedEpoch: number): void {
+    this.checkpointStateCache.pruneFinalized(finalizedEpoch);
+    this.stateCache.deleteAllBeforeEpoch(finalizedEpoch);
+  }
+
+  processState(blockRootHex: RootHex, postState: CachedBeaconStateAllForks): void {
+    this.stateCache.add(postState);
+    this.checkpointStateCache.processState(blockRootHex, postState).catch((e) => {
+      this.logger.debug("Error processing block state", {blockRootHex, slot: postState.slot}, e);
+    });
+  }
+
+  addCheckpointState(cp: phase0.Checkpoint, item: CachedBeaconStateAllForks): void {
+    this.checkpointStateCache.add(cp, item);
+  }
+
+  updateHeadState(newHeadStateRoot: RootHex, maybeHeadState: CachedBeaconStateAllForks): void {
+    const headState =
+      newHeadStateRoot === toHexString(maybeHeadState.hashTreeRoot())
+        ? maybeHeadState
+        : this.stateCache.get(newHeadStateRoot);
+
+    if (headState) {
+      this.stateCache.setHeadState(headState);
+    } else {
+      // Trigger regen on head change if necessary
+      this.logger.warn("Head state not available, triggering regen", {stateRoot: newHeadStateRoot});
+      // head has changed, so the existing cached head state is no longer useful. Set strong reference to null to free
+      // up memory for regen step below. During regen, node won't be functional but eventually head will be available
+      this.stateCache.setHeadState(null);
+      this.regen.getState(newHeadStateRoot, RegenCaller.processBlock).then(
+        (headStateRegen) => this.stateCache.setHeadState(headStateRegen),
+        (e) => this.logger.error("Error on head state regen", {}, e)
+      );
+    }
+  }
+
+  updatePreComputedCheckpoint(rootHex: RootHex, epoch: Epoch): number | null {
+    return this.checkpointStateCache.updatePreComputedCheckpoint(rootHex, epoch);
   }
 
   /**
@@ -80,14 +153,7 @@ export class QueuedStateRegenerator implements IStateRegenerator {
     if (parentEpoch < blockEpoch) {
       const checkpointState = this.checkpointStateCache.getLatest(parentRoot, blockEpoch);
       if (checkpointState && computeEpochAtSlot(checkpointState.slot) === blockEpoch) {
-        // TODO: Miss-use of checkpointStateCache here
         return checkpointState;
-        // console.error({
-        //   "checkpointState.slot": checkpointState.slot,
-        //   "block.slot": block.slot,
-        //   blockEpoch,
-        //   blockEpochStartSlot: computeStartSlotAtEpoch(blockEpoch),
-        // });
       }
     }
 
@@ -159,7 +225,7 @@ export class QueuedStateRegenerator implements IStateRegenerator {
   private jobQueueProcessor = async (regenRequest: RegenRequest): Promise<CachedBeaconStateAllForks> => {
     const metricsLabels = {
       caller: regenRequest.args[regenRequest.args.length - 1] as RegenCaller,
-      entrypoint: regenRequest.key,
+      entrypoint: regenRequest.key as RegenFnName,
     };
     let timer;
     try {

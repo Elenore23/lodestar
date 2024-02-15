@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-// MUST import first to apply preset from args
+// MUST import first to apply preset from args and set ssz hasher
+import "./applyPreset.js";
 import {YargsError} from "../utils/errors.js";
 import {getLodestarProverCli, yarg} from "./cli.js";
 import "source-map-support/register.js";

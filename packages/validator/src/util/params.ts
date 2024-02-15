@@ -118,15 +118,19 @@ function getSpecCriticalParams(localConfig: ChainConfig): Record<keyof ConfigWit
     INACTIVITY_SCORE_RECOVERY_RATE: true,
     EJECTION_BALANCE: true,
     MIN_PER_EPOCH_CHURN_LIMIT: true,
+    MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT: denebForkRelevant,
     CHURN_LIMIT_QUOTIENT: true,
 
-    // Proposer boost
+    // Fork choice
     PROPOSER_SCORE_BOOST: false, // Ignored as it's changing https://github.com/ethereum/consensus-specs/pull/2895
 
     // Deposit contract
     DEPOSIT_CHAIN_ID: false, // Non-critical
     DEPOSIT_NETWORK_ID: false, // Non-critical
     DEPOSIT_CONTRACT_ADDRESS: true,
+
+    // Networking (non-critical as those do not affect consensus)
+    MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: false,
 
     // # Phase0Preset
     /////////////////
@@ -208,5 +212,7 @@ function getSpecCriticalParams(localConfig: ChainConfig): Record<keyof ConfigWit
     /////////////////
     FIELD_ELEMENTS_PER_BLOB: denebForkRelevant,
     MAX_BLOBS_PER_BLOCK: denebForkRelevant,
+    MAX_BLOB_COMMITMENTS_PER_BLOCK: denebForkRelevant,
+    KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: denebForkRelevant,
   };
 }

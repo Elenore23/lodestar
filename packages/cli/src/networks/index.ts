@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import got from "got";
+import {ENR} from "@chainsafe/enr";
 import {SLOTS_PER_EPOCH} from "@lodestar/params";
 import {ApiError, getClient} from "@lodestar/api";
 import {getStateTypeFromBytes} from "@lodestar/beacon-node";
@@ -15,18 +16,29 @@ import * as gnosis from "./gnosis.js";
 import * as goerli from "./goerli.js";
 import * as ropsten from "./ropsten.js";
 import * as sepolia from "./sepolia.js";
+import * as holesky from "./holesky.js";
 import * as chiado from "./chiado.js";
-import * as zhejiang from "./zhejiang.js";
+import * as ephemery from "./ephemery.js";
 
-export type NetworkName = "mainnet" | "dev" | "gnosis" | "goerli" | "ropsten" | "sepolia" | "chiado" | "zhejiang";
+export type NetworkName =
+  | "mainnet"
+  | "dev"
+  | "gnosis"
+  | "goerli"
+  | "ropsten"
+  | "sepolia"
+  | "holesky"
+  | "chiado"
+  | "ephemery";
 export const networkNames: NetworkName[] = [
   "mainnet",
   "gnosis",
   "goerli",
   "ropsten",
   "sepolia",
+  "holesky",
   "chiado",
-  "zhejiang",
+  "ephemery",
 
   // Leave always as last network. The order matters for the --help printout
   "dev",
@@ -64,10 +76,12 @@ export function getNetworkData(network: NetworkName): {
       return ropsten;
     case "sepolia":
       return sepolia;
+    case "holesky":
+      return holesky;
     case "chiado":
       return chiado;
-    case "zhejiang":
-      return zhejiang;
+    case "ephemery":
+      return ephemery;
     default:
       throw Error(`Network not supported: ${network}`);
   }
@@ -122,6 +136,13 @@ export function readBootnodes(bootnodesFilePath: string): string[] {
   const bootnodesFile = fs.readFileSync(bootnodesFilePath, "utf8");
 
   const bootnodes = parseBootnodesFile(bootnodesFile);
+  for (const enrStr of bootnodes) {
+    try {
+      ENR.decodeTxt(enrStr);
+    } catch (e) {
+      throw new Error(`Invalid ENR found in ${bootnodesFilePath}:\n    ${enrStr}`);
+    }
+  }
 
   if (bootnodes.length === 0) {
     throw new Error(`No bootnodes found on file ${bootnodesFilePath}`);

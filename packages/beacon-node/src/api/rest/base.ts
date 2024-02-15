@@ -3,9 +3,8 @@ import fastify, {FastifyInstance} from "fastify";
 import fastifyCors from "@fastify/cors";
 import bearerAuthPlugin from "@fastify/bearer-auth";
 import {RouteConfig} from "@lodestar/api/beacon/server";
-import {ErrorAborted, Logger} from "@lodestar/utils";
+import {ErrorAborted, Gauge, Histogram, Logger} from "@lodestar/utils";
 import {isLocalhostIP} from "../../util/ip.js";
-import {IGauge, IHistogram} from "../../metrics/index.js";
 import {ApiError, NodeIsSyncing} from "../impl/errors.js";
 import {HttpActiveSocketsTracker, SocketMetrics} from "./activeSockets.js";
 
@@ -14,7 +13,9 @@ export type RestApiServerOpts = {
   cors?: string;
   address?: string;
   bearerToken?: string;
+  headerLimit?: number;
   bodyLimit?: number;
+  swaggerUI?: boolean;
 };
 
 export type RestApiServerModules = {
@@ -23,9 +24,9 @@ export type RestApiServerModules = {
 };
 
 export type RestApiServerMetrics = SocketMetrics & {
-  requests: IGauge<"operationId">;
-  responseTime: IHistogram<"operationId">;
-  errors: IGauge<"operationId">;
+  requests: Gauge<{operationId: string}>;
+  responseTime: Histogram<{operationId: string}>;
+  errors: Gauge<{operationId: string}>;
 };
 
 /**
@@ -36,7 +37,10 @@ export class RestApiServer {
   protected readonly logger: Logger;
   private readonly activeSockets: HttpActiveSocketsTracker;
 
-  constructor(private readonly opts: RestApiServerOpts, modules: RestApiServerModules) {
+  constructor(
+    protected readonly opts: RestApiServerOpts,
+    modules: RestApiServerModules
+  ) {
     // Apply opts defaults
     const {logger, metrics} = modules;
 
@@ -53,6 +57,7 @@ export class RestApiServer {
           parseArrays: false,
         }),
       bodyLimit: opts.bodyLimit,
+      http: {maxHeaderSize: opts.headerLimit},
     });
 
     this.activeSockets = new HttpActiveSocketsTracker(server.server, metrics);
@@ -80,14 +85,19 @@ export class RestApiServer {
     // Note: Must be an async method so fastify can continue the release lifecycle. Otherwise we must call done() or the request stalls
     server.addHook("onRequest", async (req, _res) => {
       const {operationId} = req.routeConfig as RouteConfig;
-      this.logger.debug(`Req ${req.id} ${req.ip} ${operationId}`);
+      this.logger.debug(`Req ${req.id as string} ${req.ip} ${operationId}`);
       metrics?.requests.inc({operationId});
+    });
+
+    server.addHook("preHandler", async (req, _res) => {
+      const {operationId} = req.routeConfig as RouteConfig;
+      this.logger.debug(`Exec ${req.id as string} ${req.ip} ${operationId}`);
     });
 
     // Log after response
     server.addHook("onResponse", async (req, res) => {
       const {operationId} = req.routeConfig as RouteConfig;
-      this.logger.debug(`Res ${req.id} ${operationId} - ${res.raw.statusCode}`);
+      this.logger.debug(`Res ${req.id as string} ${operationId} - ${res.raw.statusCode}`);
       metrics?.responseTime.observe({operationId}, res.getResponseTime() / 1000);
     });
 
@@ -99,9 +109,9 @@ export class RestApiServer {
       const {operationId} = req.routeConfig as RouteConfig;
 
       if (err instanceof ApiError) {
-        this.logger.warn(`Req ${req.id} ${operationId} failed`, {reason: err.message});
+        this.logger.warn(`Req ${req.id as string} ${operationId} failed`, {reason: err.message});
       } else {
-        this.logger.error(`Req ${req.id} ${operationId} error`, {}, err);
+        this.logger.error(`Req ${req.id as string} ${operationId} error`, {}, err);
       }
       metrics?.errors.inc({operationId});
     });
@@ -133,12 +143,14 @@ export class RestApiServer {
   async close(): Promise<void> {
     // In NodeJS land calling close() only causes new connections to be rejected.
     // Existing connections can prevent .close() from resolving for potentially forever.
-    // In Lodestar case when the BeaconNode wants to close we will just abruptly terminate
-    // all existing connections for a fast shutdown.
+    // In Lodestar case when the BeaconNode wants to close we will attempt to gracefully
+    // close all existing connections but forcefully terminate after timeout for a fast shutdown.
     // Inspired by https://github.com/gajus/http-terminator/
-    this.activeSockets.destroyAll();
+    await this.activeSockets.terminate();
 
     await this.server.close();
+
+    this.logger.debug("REST API server closed");
   }
 
   /** For child classes to override */

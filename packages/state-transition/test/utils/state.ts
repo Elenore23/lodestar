@@ -11,7 +11,7 @@ import {config} from "@lodestar/config/default";
 
 import {createBeaconConfig, ChainForkConfig} from "@lodestar/config";
 import {ZERO_HASH} from "../../src/constants/index.js";
-import {newZeroedBigIntArray} from "../../src/util/index.js";
+import {newZeroedArray} from "../../src/util/index.js";
 
 import {
   BeaconStatePhase0,
@@ -21,7 +21,7 @@ import {
   PubkeyIndexMap,
 } from "../../src/index.js";
 import {BeaconStateCache} from "../../src/cache/stateCache.js";
-import {EpochContextOpts} from "../../src/cache/epochContext.js";
+import {EpochCacheOpts} from "../../src/cache/epochCache.js";
 
 /**
  * Copy of BeaconState, but all fields are marked optional to allow for swapping out variables as needed.
@@ -64,7 +64,7 @@ export function generateState(opts?: TestBeaconState): BeaconStatePhase0 {
     validators: [],
     balances: [],
     randaoMixes: Array.from({length: EPOCHS_PER_HISTORICAL_VECTOR}, () => ZERO_HASH),
-    slashings: newZeroedBigIntArray(EPOCHS_PER_SLASHINGS_VECTOR),
+    slashings: newZeroedArray(EPOCHS_PER_SLASHINGS_VECTOR),
     previousEpochAttestations: [],
     currentEpochAttestations: [],
     justificationBits: ssz.phase0.JustificationBits.defaultValue(),
@@ -100,7 +100,7 @@ export function generateCachedState(
 export function createCachedBeaconStateTest<T extends BeaconStateAllForks>(
   state: T,
   configCustom: ChainForkConfig = config,
-  opts?: EpochContextOpts
+  opts?: EpochCacheOpts
 ): T & BeaconStateCache {
   return createCachedBeaconState<T>(
     state,

@@ -1,5 +1,5 @@
-import {ssz} from "@lodestar/types";
 import {fromHexString} from "@chainsafe/ssz";
+import {ssz} from "@lodestar/types";
 import {ForkName} from "@lodestar/params";
 
 import {Api} from "../../../src/builder/routes.js";
@@ -7,7 +7,7 @@ import {GenericServerTestCases} from "../../utils/genericServerTest.js";
 
 // randomly pregenerated pubkey
 const pubkeyRand = "0x84105a985058fc8740a48bf1ede9d223ef09e8c6b1735ba0a55cf4a9ff2ff92376b778798365e488dab07a652eb04576";
-const root = Buffer.alloc(32, 1);
+const root = new Uint8Array(32).fill(1);
 
 export const testData: GenericServerTestCases<Api> = {
   status: {
@@ -25,9 +25,5 @@ export const testData: GenericServerTestCases<Api> = {
   submitBlindedBlock: {
     args: [ssz.deneb.SignedBlindedBeaconBlock.defaultValue()],
     res: {version: ForkName.bellatrix, data: ssz.bellatrix.ExecutionPayload.defaultValue()},
-  },
-  submitBlindedBlockV2: {
-    args: [ssz.deneb.SignedBlindedBeaconBlock.defaultValue()],
-    res: {version: ForkName.deneb, data: ssz.deneb.SignedBeaconBlockAndBlobsSidecar.defaultValue()},
   },
 };

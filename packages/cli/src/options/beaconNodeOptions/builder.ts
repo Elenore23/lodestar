@@ -1,24 +1,27 @@
-import {defaultOptions, IBeaconNodeOptions} from "@lodestar/beacon-node";
-import {CliCommandOptions} from "../../util/index.js";
-import {getVersionData} from "../../util/version.js";
+import {defaultExecutionBuilderHttpOpts, IBeaconNodeOptions} from "@lodestar/beacon-node";
+import {CliCommandOptions, YargsError} from "../../util/index.js";
 
 export type ExecutionBuilderArgs = {
   builder: boolean;
-  "builder.urls": string[];
-  "builder.timeout": number;
-  "builder.faultInspectionWindow": number;
-  "builder.allowedFaults": number;
-  "builder.userAgent": string;
+  "builder.url"?: string;
+  "builder.timeout"?: number;
+  "builder.faultInspectionWindow"?: number;
+  "builder.allowedFaults"?: number;
 };
 
 export function parseArgs(args: ExecutionBuilderArgs): IBeaconNodeOptions["executionBuilder"] {
+  if (Array.isArray(args["builder.url"]) || args["builder.url"]?.includes(",http")) {
+    throw new YargsError(
+      "Lodestar only supports a single builder URL. External tooling like mev-boost can be used to connect to multiple builder/relays"
+    );
+  }
+
   return {
     enabled: args["builder"],
-    urls: args["builder.urls"],
+    url: args["builder.url"] ?? defaultExecutionBuilderHttpOpts.url,
     timeout: args["builder.timeout"],
     faultInspectionWindow: args["builder.faultInspectionWindow"],
     allowedFaults: args["builder.allowedFaults"],
-    userAgent: args["builder.userAgent"],
   };
 }
 
@@ -26,25 +29,22 @@ export const options: CliCommandOptions<ExecutionBuilderArgs> = {
   builder: {
     description: "Enable builder interface",
     type: "boolean",
-    defaultDescription: `${
-      defaultOptions.executionBuilder.mode === "http" ? defaultOptions.executionBuilder.enabled : false
-    }`,
+    default: defaultExecutionBuilderHttpOpts.enabled,
     group: "builder",
   },
 
-  "builder.urls": {
-    description: "Urls hosting the builder API",
-    type: "array",
-    defaultDescription:
-      defaultOptions.executionBuilder.mode === "http" ? defaultOptions.executionBuilder.urls.join(" ") : "",
+  "builder.url": {
+    alias: ["builder.urls"],
+    description: "Url hosting the builder API",
+    defaultDescription: defaultExecutionBuilderHttpOpts.url,
+    type: "string",
     group: "builder",
   },
 
   "builder.timeout": {
     description: "Timeout in milliseconds for builder API HTTP client",
     type: "number",
-    defaultDescription:
-      defaultOptions.executionBuilder.mode === "http" ? String(defaultOptions.executionBuilder.timeout) : "",
+    defaultDescription: String(defaultExecutionBuilderHttpOpts.timeout),
     group: "builder",
   },
 
@@ -56,15 +56,7 @@ export const options: CliCommandOptions<ExecutionBuilderArgs> = {
 
   "builder.allowedFaults": {
     type: "number",
-    description: "Number of missed slots allowed in the faultInspectionWindow for builder circuit",
-    group: "builder",
-  },
-
-  "builder.userAgent": {
-    type: "string",
-    description: "User-Agent header attached to all builder requests",
-    // Casting to `as string` so that if version type changes this line does not compile
-    default: `Lodestar/${getVersionData().version as string}`,
+    description: "Number of missed slots allowed in the `faultInspectionWindow` for builder circuit",
     group: "builder",
   },
 };

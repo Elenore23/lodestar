@@ -1,44 +1,50 @@
-import {allForks, bellatrix, Slot, Root, BLSPubkey, ssz, deneb, Wei} from "@lodestar/types";
-import {ChainForkConfig} from "@lodestar/config";
-import {getClient, Api as BuilderApi} from "@lodestar/api/builder";
 import {byteArrayEquals, toHexString} from "@chainsafe/ssz";
-import {SLOTS_PER_EPOCH} from "@lodestar/params";
-
+import {allForks, bellatrix, Slot, Root, BLSPubkey, ssz, deneb, Wei} from "@lodestar/types";
+import {parseExecutionPayloadAndBlobsBundle, reconstructFullBlockOrContents} from "@lodestar/state-transition";
+import {ChainForkConfig} from "@lodestar/config";
+import {Logger} from "@lodestar/logger";
+import {getClient, Api as BuilderApi} from "@lodestar/api/builder";
+import {SLOTS_PER_EPOCH, ForkExecution} from "@lodestar/params";
+import {toSafePrintableUrl} from "@lodestar/utils";
 import {ApiError} from "@lodestar/api";
-import {validateBlobsAndKzgCommitments} from "../../chain/produceBlock/validateBlobsAndKzgCommitments.js";
 import {Metrics} from "../../metrics/metrics.js";
 import {IExecutionBuilder} from "./interface.js";
 
 export type ExecutionBuilderHttpOpts = {
   enabled: boolean;
-  urls: string[];
+  url: string;
   timeout?: number;
   faultInspectionWindow?: number;
   allowedFaults?: number;
 
   // Only required for merge-mock runs, no need to expose it to cli
-  issueLocalFcUForBlockProduction?: boolean;
+  issueLocalFcUWithFeeRecipient?: string;
   // Add User-Agent header to all requests
   userAgent?: string;
 };
 
 export const defaultExecutionBuilderHttpOpts: ExecutionBuilderHttpOpts = {
   enabled: false,
-  urls: ["http://localhost:8661"],
+  url: "http://localhost:8661",
   timeout: 12000,
 };
 
 export class ExecutionBuilderHttp implements IExecutionBuilder {
   readonly api: BuilderApi;
   readonly config: ChainForkConfig;
-  readonly issueLocalFcUForBlockProduction?: boolean;
+  readonly issueLocalFcUWithFeeRecipient?: string;
   // Builder needs to be explicity enabled using updateStatus
   status = false;
   faultInspectionWindow: number;
   allowedFaults: number;
 
-  constructor(opts: ExecutionBuilderHttpOpts, config: ChainForkConfig, metrics: Metrics | null = null) {
-    const baseUrl = opts.urls[0];
+  constructor(
+    opts: ExecutionBuilderHttpOpts,
+    config: ChainForkConfig,
+    metrics: Metrics | null = null,
+    logger?: Logger
+  ) {
+    const baseUrl = opts.url;
     if (!baseUrl) throw Error("No Url provided for executionBuilder");
     this.api = getClient(
       {
@@ -48,8 +54,9 @@ export class ExecutionBuilderHttp implements IExecutionBuilder {
       },
       {config, metrics: metrics?.builderHttpClient}
     );
+    logger?.info("External builder", {url: toSafePrintableUrl(baseUrl)});
     this.config = config;
-    this.issueLocalFcUForBlockProduction = opts.issueLocalFcUForBlockProduction;
+    this.issueLocalFcUWithFeeRecipient = opts.issueLocalFcUWithFeeRecipient;
 
     /**
      * Beacon clients select randomized values from the following ranges when initializing
@@ -85,31 +92,40 @@ export class ExecutionBuilderHttp implements IExecutionBuilder {
   }
 
   async registerValidator(registrations: bellatrix.SignedValidatorRegistrationV1[]): Promise<void> {
-    ApiError.assert(await this.api.registerValidator(registrations));
+    ApiError.assert(
+      await this.api.registerValidator(registrations),
+      "Failed to forward validator registrations to connected builder"
+    );
   }
 
   async getHeader(
+    fork: ForkExecution,
     slot: Slot,
     parentHash: Root,
     proposerPubKey: BLSPubkey
   ): Promise<{
     header: allForks.ExecutionPayloadHeader;
-    blockValue: Wei;
+    executionPayloadValue: Wei;
     blobKzgCommitments?: deneb.BlobKzgCommitments;
   }> {
     const res = await this.api.getHeader(slot, parentHash, proposerPubKey);
     ApiError.assert(res, "execution.builder.getheader");
-    const {header, value: blockValue} = res.response.data.message;
-    const {blobKzgCommitments} = res.response.data.message as {blobKzgCommitments?: deneb.BlobKzgCommitments};
-    return {header, blockValue, blobKzgCommitments};
+    const {header, value: executionPayloadValue} = res.response.data.message;
+    const {blobKzgCommitments} = res.response.data.message as deneb.BuilderBid;
+    return {header, executionPayloadValue, blobKzgCommitments};
   }
 
-  async submitBlindedBlock(signedBlock: allForks.SignedBlindedBeaconBlock): Promise<allForks.SignedBeaconBlock> {
-    const res = await this.api.submitBlindedBlock(signedBlock);
+  async submitBlindedBlock(
+    signedBlindedBlock: allForks.SignedBlindedBeaconBlock
+  ): Promise<allForks.SignedBeaconBlockOrContents> {
+    const res = await this.api.submitBlindedBlock(signedBlindedBlock);
     ApiError.assert(res, "execution.builder.submitBlindedBlock");
-    const executionPayload = res.response.data;
-    const expectedTransactionsRoot = signedBlock.message.body.executionPayloadHeader.transactionsRoot;
-    const actualTransactionsRoot = ssz.bellatrix.Transactions.hashTreeRoot(res.response.data.transactions);
+    const {data} = res.response;
+
+    const {executionPayload, blobsBundle} = parseExecutionPayloadAndBlobsBundle(data);
+    // some validations for execution payload
+    const expectedTransactionsRoot = signedBlindedBlock.message.body.executionPayloadHeader.transactionsRoot;
+    const actualTransactionsRoot = ssz.bellatrix.Transactions.hashTreeRoot(executionPayload.transactions);
     if (!byteArrayEquals(expectedTransactionsRoot, actualTransactionsRoot)) {
       throw Error(
         `Invalid transactionsRoot of the builder payload, expected=${toHexString(
@@ -117,54 +133,8 @@ export class ExecutionBuilderHttp implements IExecutionBuilder {
         )}, actual=${toHexString(actualTransactionsRoot)}`
       );
     }
-    const fullySignedBlock: bellatrix.SignedBeaconBlock = {
-      ...signedBlock,
-      message: {...signedBlock.message, body: {...signedBlock.message.body, executionPayload}},
-    };
-    return fullySignedBlock;
-  }
 
-  async submitBlindedBlockV2(
-    signedBlock: allForks.SignedBlindedBeaconBlock
-  ): Promise<allForks.SignedBeaconBlockAndBlobsSidecar> {
-    const res = await this.api.submitBlindedBlockV2(signedBlock);
-    ApiError.assert(res, "execution.builder.submitBlindedBlockV2");
-    const signedBeaconBlockAndBlobsSidecar = res.response.data;
-    // Since we get the full block back, we can just just compare the hash of blinded to returned
-    const {beaconBlock, blobsSidecar} = signedBeaconBlockAndBlobsSidecar;
-
-    // Verify if the transactions and withdrawals match with their corresponding roots
-    // since we get the full signed block back, its easy to validate response consistency
-    // if the signed blinded and signed full root simply match
-    const signedBlockRoot = this.config
-      .getBlindedForkTypes(signedBlock.message.slot)
-      .SignedBeaconBlock.hashTreeRoot(signedBlock);
-    const beaconBlockRoot = this.config
-      .getForkTypes(beaconBlock.message.slot)
-      .SignedBeaconBlock.hashTreeRoot(beaconBlock);
-    if (!byteArrayEquals(signedBlockRoot, beaconBlockRoot)) {
-      throw Error(
-        `Invalid SignedBeaconBlock of the builder submitBlindedBlockV2 response, expected=${toHexString(
-          signedBlockRoot
-        )}, actual=${toHexString(beaconBlockRoot)}`
-      );
-    }
-
-    // Sanity check consistency between payload and blobs bundle still needs to be done
-    const payload = beaconBlock.message.body.executionPayload;
-    const blockHash = toHexString(payload.blockHash);
-    const blobsBlockHash = toHexString(blobsSidecar.beaconBlockRoot);
-    if (blockHash !== blobsBlockHash) {
-      throw Error(`blobsSidecar incorrect blockHash expected=${blockHash}, actual=${blobsBlockHash}`);
-    }
-    // Sanity-check that the KZG commitments match the versioned hashes in the transactions
-    const {blobKzgCommitments: kzgs} = beaconBlock.message.body as deneb.BeaconBlockBody;
-    if (kzgs === undefined) {
-      throw Error("Missing blobKzgCommitments on beaconBlock's body");
-    }
-    const {blobs} = blobsSidecar;
-    validateBlobsAndKzgCommitments(payload, {blockHash, kzgs, blobs});
-
-    return signedBeaconBlockAndBlobsSidecar;
+    const contents = blobsBundle ? {blobs: blobsBundle.blobs, kzgProofs: blobsBundle.proofs} : null;
+    return reconstructFullBlockOrContents(signedBlindedBlock, {executionPayload, contents});
   }
 }

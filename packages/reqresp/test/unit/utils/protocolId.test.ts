@@ -1,10 +1,10 @@
-import {expect} from "chai";
-import {Encoding, Protocol} from "../../../src/index.js";
+import {describe, it, expect} from "vitest";
+import {Encoding, ProtocolAttributes} from "../../../src/index.js";
 import {formatProtocolID, parseProtocolID as reqrespParseProtocolID} from "../../../src/utils/index.js";
 
 const protocolPrefix = "/eth2/beacon_chain/req";
 
-function parseProtocolId(protocolId: string): Protocol {
+function parseProtocolId(protocolId: string): ProtocolAttributes {
   const result = reqrespParseProtocolID(protocolId);
   if (result.protocolPrefix !== protocolPrefix) {
     throw Error(`Unknown protocolId prefix: ${result.protocolPrefix}`);
@@ -36,11 +36,11 @@ describe("ReqResp protocolID parse / render", () => {
 
   for (const {method, encoding, version, protocolId} of testCases) {
     it(`Should render ${protocolId}`, () => {
-      expect(formatProtocolID(protocolPrefix, method, version, encoding)).to.equal(protocolId);
+      expect(formatProtocolID(protocolPrefix, method, version, encoding)).toBe(protocolId);
     });
 
     it(`Should parse ${protocolId}`, () => {
-      expect(parseProtocolId(protocolId)).to.deep.equal({protocolPrefix, method, version, encoding});
+      expect(parseProtocolId(protocolId)).toEqual({protocolPrefix, method, version, encoding});
     });
   }
 });

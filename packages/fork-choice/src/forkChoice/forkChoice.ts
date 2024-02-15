@@ -39,6 +39,7 @@ import {
   EpochDifference,
   AncestorResult,
   AncestorStatus,
+  ForkChoiceMetrics,
 } from "./interface.js";
 import {IForkChoiceStore, CheckpointWithHex, toCheckpointWithHex, JustifiedBalances} from "./store.js";
 
@@ -112,6 +113,17 @@ export class ForkChoice implements IForkChoice {
     this.balances = this.fcStore.justified.balances;
   }
 
+  getMetrics(): ForkChoiceMetrics {
+    return {
+      votes: this.votes.length,
+      queuedAttestations: this.queuedAttestations.size,
+      validatedAttestationDatas: this.validatedAttestationDatas.size,
+      balancesLength: this.balances.length,
+      nodes: this.protoArray.nodes.length,
+      indices: this.protoArray.indices.size,
+    };
+  }
+
   /**
    * Returns the block root of an ancestor of `blockRoot` at the given `slot`.
    * (Note: `slot` refers to the block that is *returned*, not the one that is supplied.)
@@ -174,7 +186,7 @@ export class ForkChoice implements IForkChoice {
     const oldBalances = this.balances;
     const newBalances = this.fcStore.justified.balances;
     const deltas = computeDeltas(
-      this.protoArray.indices,
+      this.protoArray.nodes.length,
       this.votes,
       oldBalances,
       newBalances,
@@ -189,7 +201,7 @@ export class ForkChoice implements IForkChoice {
     if (this.opts?.proposerBoostEnabled && this.proposerBoostRoot) {
       const proposerBoostScore =
         this.justifiedProposerBoostScore ??
-        computeProposerBoostScoreFromBalances(this.fcStore.justified.balances, {
+        getProposerScore(this.fcStore.justified.totalBalance, {
           slotsPerEpoch: SLOTS_PER_EPOCH,
           proposerScoreBoost: this.config.PROPOSER_SCORE_BOOST,
         });
@@ -345,7 +357,9 @@ export class ForkChoice implements IForkChoice {
     if (
       this.opts?.proposerBoostEnabled &&
       this.fcStore.currentSlot === slot &&
-      blockDelaySec < this.config.SECONDS_PER_SLOT / INTERVALS_PER_SLOT
+      blockDelaySec < this.config.SECONDS_PER_SLOT / INTERVALS_PER_SLOT &&
+      // only boost the first block we see
+      this.proposerBoostRoot === null
     ) {
       this.proposerBoostRoot = blockRootHex;
     }
@@ -533,7 +547,9 @@ export class ForkChoice implements IForkChoice {
   onAttesterSlashing(attesterSlashing: phase0.AttesterSlashing): void {
     // TODO: we already call in in state-transition, find a way not to recompute it again
     const intersectingIndices = getAttesterSlashableIndices(attesterSlashing);
-    intersectingIndices.forEach((validatorIndex) => this.fcStore.equivocatingIndices.add(validatorIndex));
+    for (const validatorIndex of intersectingIndices) {
+      this.fcStore.equivocatingIndices.add(validatorIndex);
+    }
   }
 
   getLatestMessage(validatorIndex: ValidatorIndex): LatestMessage | undefined {
@@ -543,7 +559,7 @@ export class ForkChoice implements IForkChoice {
     }
     return {
       epoch: vote.nextEpoch,
-      root: vote.nextRoot,
+      root: vote.nextIndex === null ? HEX_ZERO_HASH : this.protoArray.nodes[vote.nextIndex].blockRoot,
     };
   }
 
@@ -580,24 +596,44 @@ export class ForkChoice implements IForkChoice {
    * Returns `true` if the block is known **and** a descendant of the finalized root.
    */
   hasBlockHex(blockRoot: RootHex): boolean {
-    return this.protoArray.hasBlock(blockRoot) && this.isDescendantOfFinalized(blockRoot);
+    const node = this.protoArray.getNode(blockRoot);
+    if (node === undefined) {
+      return false;
+    }
+
+    return this.protoArray.isFinalizedRootOrDescendant(node);
   }
 
   /**
-   * Returns a `ProtoBlock` if the block is known **and** a descendant of the finalized root.
+   * Same to hasBlock but without checking if the block is a descendant of the finalized root.
+   */
+  hasBlockUnsafe(blockRoot: Root): boolean {
+    return this.hasBlockHexUnsafe(toHexString(blockRoot));
+  }
+
+  /**
+   * Same to hasBlockHex but without checking if the block is a descendant of the finalized root.
+   */
+  hasBlockHexUnsafe(blockRoot: RootHex): boolean {
+    return this.protoArray.hasBlock(blockRoot);
+  }
+
+  /**
+   * Returns a MUTABLE `ProtoBlock` if the block is known **and** a descendant of the finalized root.
    */
   getBlockHex(blockRoot: RootHex): ProtoBlock | null {
-    const block = this.protoArray.getBlock(blockRoot);
-    if (!block) {
+    const node = this.protoArray.getNode(blockRoot);
+    if (!node) {
       return null;
     }
-    // If available, use the parent_root to perform the lookup since it will involve one
-    // less lookup. This involves making the assumption that the finalized block will
-    // always have `block.parent_root` of `None`.
-    if (!this.isDescendantOfFinalized(blockRoot)) {
+
+    if (!this.protoArray.isFinalizedRootOrDescendant(node)) {
       return null;
     }
-    return block;
+
+    return {
+      ...node,
+    };
   }
 
   getJustifiedBlock(): ProtoBlock {
@@ -623,13 +659,6 @@ export class ForkChoice implements IForkChoice {
   }
 
   /**
-   * Return `true` if `block_root` is equal to the finalized root, or a known descendant of it.
-   */
-  isDescendantOfFinalized(blockRoot: RootHex): boolean {
-    return this.protoArray.isDescendant(this.fcStore.finalizedCheckpoint.rootHex, blockRoot);
-  }
-
-  /**
    * Returns true if the `descendantRoot` has an ancestor with `ancestorRoot`.
    *
    * Always returns `false` if either input roots are unknown.
@@ -639,8 +668,38 @@ export class ForkChoice implements IForkChoice {
     return this.protoArray.isDescendant(ancestorRoot, descendantRoot);
   }
 
+  /**
+   * All indices in votes are relative to proto array so always keep it up to date
+   */
   prune(finalizedRoot: RootHex): ProtoBlock[] {
-    return this.protoArray.maybePrune(finalizedRoot);
+    const prunedNodes = this.protoArray.maybePrune(finalizedRoot);
+    const prunedCount = prunedNodes.length;
+    for (let i = 0; i < this.votes.length; i++) {
+      const vote = this.votes[i];
+      // validator has never voted
+      if (vote === undefined) {
+        continue;
+      }
+
+      if (vote.currentIndex !== null) {
+        if (vote.currentIndex >= prunedCount) {
+          vote.currentIndex -= prunedCount;
+        } else {
+          // the vote was for a pruned proto node
+          vote.currentIndex = null;
+        }
+      }
+
+      if (vote.nextIndex !== null) {
+        if (vote.nextIndex >= prunedCount) {
+          vote.nextIndex -= prunedCount;
+        } else {
+          // the vote was for a pruned proto node
+          vote.nextIndex = null;
+        }
+      }
+    }
+    return prunedNodes;
   }
 
   setPruneThreshold(threshold: number): void {
@@ -683,6 +742,19 @@ export class ForkChoice implements IForkChoice {
 
     for (const block of this.protoArray.iterateAncestorNodes(this.head.blockRoot)) {
       if (block.slot === slot) {
+        return block;
+      }
+    }
+    return null;
+  }
+
+  getCanonicalBlockClosestLteSlot(slot: Slot): ProtoBlock | null {
+    if (slot >= this.head.slot) {
+      return this.head;
+    }
+
+    for (const block of this.protoArray.iterateAncestorNodes(this.head.blockRoot)) {
+      if (slot >= block.slot) {
         return block;
       }
     }
@@ -791,7 +863,7 @@ export class ForkChoice implements IForkChoice {
     // The navigation at the end of the while loop will always progress backwards,
     // jumping to a block with a strictly less slot number. So the condition `blockEpoch < atEpoch`
     // is guaranteed to happen. Given the use of target blocks for faster navigation, it will take
-    // at most `2 * (blockEpoch - atEpoch + 1)` iterations to find the dependant root.
+    // at most `2 * (blockEpoch - atEpoch + 1)` iterations to find the dependent root.
 
     const beforeSlot = block.slot - (block.slot % SLOTS_PER_EPOCH) - epochDifference * SLOTS_PER_EPOCH;
 
@@ -1052,14 +1124,20 @@ export class ForkChoice implements IForkChoice {
    */
   private addLatestMessage(validatorIndex: ValidatorIndex, nextEpoch: Epoch, nextRoot: RootHex): void {
     const vote = this.votes[validatorIndex];
+    // should not happen, attestation is validated before this step
+    const nextIndex = this.protoArray.indices.get(nextRoot);
+    if (nextIndex === undefined) {
+      throw new Error(`Could not find proto index for nextRoot ${nextRoot}`);
+    }
+
     if (vote === undefined) {
       this.votes[validatorIndex] = {
-        currentRoot: HEX_ZERO_HASH,
-        nextRoot,
+        currentIndex: null,
+        nextIndex,
         nextEpoch,
       };
     } else if (nextEpoch > vote.nextEpoch) {
-      vote.nextRoot = nextRoot;
+      vote.nextIndex = nextIndex;
       vote.nextEpoch = nextEpoch;
     }
     // else its an old vote, don't count it
@@ -1184,32 +1262,10 @@ export function assertValidTerminalPowBlock(
   }
 }
 
-function computeProposerBoostScore(
-  {
-    justifiedTotalActiveBalanceByIncrement,
-    justifiedActiveValidators,
-  }: {justifiedTotalActiveBalanceByIncrement: number; justifiedActiveValidators: number},
+export function getProposerScore(
+  justifiedTotalActiveBalanceByIncrement: number,
   config: {slotsPerEpoch: number; proposerScoreBoost: number}
 ): number {
-  const avgBalanceByIncrement = Math.floor(justifiedTotalActiveBalanceByIncrement / justifiedActiveValidators);
-  const committeeSize = Math.floor(justifiedActiveValidators / config.slotsPerEpoch);
-  const committeeWeight = committeeSize * avgBalanceByIncrement;
-  const proposerScore = Math.floor((committeeWeight * config.proposerScoreBoost) / 100);
-  return proposerScore;
-}
-
-export function computeProposerBoostScoreFromBalances(
-  justifiedBalances: EffectiveBalanceIncrements,
-  config: {slotsPerEpoch: number; proposerScoreBoost: number}
-): number {
-  let justifiedTotalActiveBalanceByIncrement = 0,
-    justifiedActiveValidators = 0;
-  for (let i = 0; i < justifiedBalances.length; i++) {
-    if (justifiedBalances[i] > 0) {
-      justifiedActiveValidators += 1;
-      // justified balances here are by increment
-      justifiedTotalActiveBalanceByIncrement += justifiedBalances[i];
-    }
-  }
-  return computeProposerBoostScore({justifiedTotalActiveBalanceByIncrement, justifiedActiveValidators}, config);
+  const committeeWeight = Math.floor(justifiedTotalActiveBalanceByIncrement / config.slotsPerEpoch);
+  return Math.floor((committeeWeight * config.proposerScoreBoost) / 100);
 }

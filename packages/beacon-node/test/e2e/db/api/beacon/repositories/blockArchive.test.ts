@@ -1,4 +1,4 @@
-import {expect} from "chai";
+import {beforeAll, afterAll, describe, it, expect} from "vitest";
 import {config} from "@lodestar/config/default";
 import {ssz} from "@lodestar/types";
 import {BeaconDb} from "../../../../../../src/db/index.js";
@@ -8,12 +8,12 @@ describe("BlockArchiveRepository", function () {
   let db: BeaconDb;
   const sampleBlock = ssz.phase0.SignedBeaconBlock.defaultValue();
 
-  before(async () => {
+  beforeAll(async () => {
     db = await startTmpBeaconDb(config);
   });
 
-  after(async () => {
-    await db.stop();
+  afterAll(async () => {
+    await db.close();
   });
 
   it("batchPutBinary should result in the same to batchPut", async () => {
@@ -42,6 +42,6 @@ describe("BlockArchiveRepository", function () {
 
     // make sure they are the same except for slot
     savedBlock2.message.slot = sampleBlock.message.slot;
-    expect(ssz.phase0.SignedBeaconBlock.equals(savedBlock1, savedBlock2)).to.equal(true);
+    expect(ssz.phase0.SignedBeaconBlock.equals(savedBlock1, savedBlock2)).toBe(true);
   });
 });

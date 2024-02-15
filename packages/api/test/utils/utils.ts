@@ -1,6 +1,6 @@
+import {beforeAll, afterAll, MockedObject, vi} from "vitest";
 import qs from "qs";
 import fastify, {FastifyInstance} from "fastify";
-import Sinon from "sinon";
 import {mapValues} from "@lodestar/utils";
 import {ServerApi} from "../../src/interfaces.js";
 
@@ -15,11 +15,11 @@ export function getTestServer(): {baseUrl: string; server: FastifyInstance} {
 
   server.addHook("onError", (request, reply, error, done) => {
     // eslint-disable-next-line no-console
-    console.log(`onError: ${error}`);
+    console.log(`onError: ${error.toString()}`);
     done();
   });
 
-  before("start server", async () => {
+  beforeAll(async () => {
     await new Promise((resolve, reject) => {
       server.listen({port}, function (err, address) {
         if (err !== null && err != undefined) {
@@ -31,16 +31,15 @@ export function getTestServer(): {baseUrl: string; server: FastifyInstance} {
     });
   });
 
-  after("stop server", async () => {
+  afterAll(async () => {
     await server.close();
   });
 
   return {baseUrl, server};
 }
 
-/** Type helper to get a Sinon mock object type with Api */
 export function getMockApi<Api extends Record<string, any>>(
   routeIds: Record<string, any>
-): Sinon.SinonStubbedInstance<ServerApi<Api>> & ServerApi<Api> {
-  return mapValues(routeIds, () => Sinon.stub()) as Sinon.SinonStubbedInstance<ServerApi<Api>> & ServerApi<Api>;
+): MockedObject<ServerApi<Api>> & ServerApi<Api> {
+  return mapValues(routeIds, () => vi.fn()) as MockedObject<ServerApi<Api>> & ServerApi<Api>;
 }

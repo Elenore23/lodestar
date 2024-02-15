@@ -1,8 +1,7 @@
+import {Proof, ProofType, Tree} from "@chainsafe/persistent-merkle-tree";
 import {BeaconStateAllForks} from "@lodestar/state-transition";
 import {FINALIZED_ROOT_GINDEX, BLOCK_BODY_EXECUTION_PAYLOAD_GINDEX, ForkExecution} from "@lodestar/params";
 import {allForks, ssz} from "@lodestar/types";
-import {Proof, ProofType, Tree} from "@chainsafe/persistent-merkle-tree";
-
 import {SyncCommitteeWitness} from "./types.js";
 
 export function getSyncCommitteesWitness(state: BeaconStateAllForks): SyncCommitteeWitness {
@@ -49,7 +48,7 @@ export function getReceiptsRootProof(state: BeaconStateAllForks): Proof {
   state.commit();
   return new Tree(state.node).getProof({
     type: ProofType.treeOffset,
-    gindices: [BigInt(899)],
+    gindices: [BigInt(1795)], // capella:899, deneb:1795
   });
 }
 

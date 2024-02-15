@@ -1,24 +1,22 @@
-import {expect} from "chai";
-import chai from "chai";
-import chaiAsPromised from "chai-as-promised";
+import {describe, it, expect} from "vitest";
 import deepmerge from "deepmerge";
+import {getEnvLogger} from "@lodestar/logger/env";
 import {ELProof, ELStorageProof} from "../../../src/types.js";
-import {isValidAccount, isValidStorageKeys} from "../../../src/utils/verification.js";
+import {isValidAccount, isValidStorageKeys} from "../../../src/utils/validation.js";
 import {invalidStorageProof, validStorageProof} from "../../fixtures/index.js";
-import {createMockLogger} from "../../mocks/logger_mock.js";
-import eoaProof from "../../fixtures/sepolia/eth_getBalance_eoa_proof.json" assert {type: "json"};
+import eoaProof from "../../fixtures/sepolia/eth_getBalance_eoa.json" assert {type: "json"};
 import {hexToBuffer} from "../../../src/utils/conversion.js";
 
 const address = eoaProof.request.params[0] as string;
-const validAccountProof = eoaProof.response.result as unknown as ELProof;
-const validStateRoot = hexToBuffer(eoaProof.executionPayload.state_root);
+const validAccountProof = eoaProof.dependentRequests[0].response.result as unknown as ELProof;
+const validStateRoot = hexToBuffer(eoaProof.beacon.executionPayload.state_root);
 
 const invalidAccountProof = deepmerge(validAccountProof, {});
 delete invalidAccountProof.accountProof[0];
 
-chai.use(chaiAsPromised);
-
 describe("uitls/execution", () => {
+  const logger = getEnvLogger();
+
   describe("isValidAccount", () => {
     it("should return true if account is valid", async () => {
       await expect(
@@ -26,9 +24,9 @@ describe("uitls/execution", () => {
           proof: validAccountProof,
           address,
           stateRoot: validStateRoot,
-          logger: createMockLogger(),
+          logger,
         })
-      ).eventually.to.be.true;
+      ).resolves.toBe(true);
     });
 
     it("should fail with error if proof is valid but address is wrong", async () => {
@@ -44,9 +42,9 @@ describe("uitls/execution", () => {
           proof,
           address,
           stateRoot,
-          logger: createMockLogger(),
+          logger,
         })
-      ).eventually.to.be.false;
+      ).resolves.toBe(false);
     });
 
     it("should fail with error if account is not valid", async () => {
@@ -58,9 +56,9 @@ describe("uitls/execution", () => {
           proof: invalidAccountProof,
           address,
           stateRoot,
-          logger: createMockLogger(),
+          logger,
         })
-      ).eventually.to.be.false;
+      ).resolves.toBe(false);
     });
   });
 
@@ -72,9 +70,9 @@ describe("uitls/execution", () => {
         isValidStorageKeys({
           proof: validStorageProof,
           storageKeys,
-          logger: createMockLogger(),
+          logger,
         })
-      ).eventually.to.be.true;
+      ).resolves.toBe(true);
     });
 
     it("should fail with error for a wrong proof", async () => {
@@ -82,11 +80,11 @@ describe("uitls/execution", () => {
 
       await expect(
         isValidStorageKeys({
-          logger: createMockLogger(),
+          logger,
           proof: invalidStorageProof,
           storageKeys,
         })
-      ).eventually.to.be.false;
+      ).resolves.toBe(false);
     });
 
     it("should fail with error for a non existance key", async () => {
@@ -106,9 +104,9 @@ describe("uitls/execution", () => {
         isValidStorageKeys({
           proof,
           storageKeys,
-          logger: createMockLogger(),
+          logger,
         })
-      ).eventually.to.be.false;
+      ).resolves.toBe(false);
     });
 
     it("should return true empty keys", async () => {
@@ -122,9 +120,9 @@ describe("uitls/execution", () => {
         isValidStorageKeys({
           proof,
           storageKeys,
-          logger: createMockLogger(),
+          logger,
         })
-      ).eventually.to.be.true;
+      ).resolves.toBe(true);
     });
   });
 });

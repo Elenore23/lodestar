@@ -1,45 +1,102 @@
-import {CachedBeaconStateAllForks, computeEpochAtSlot} from "@lodestar/state-transition";
+import {CachedBeaconStateAllForks, computeEpochAtSlot, DataAvailableStatus} from "@lodestar/state-transition";
 import {MaybeValidExecutionStatus} from "@lodestar/fork-choice";
 import {allForks, deneb, Slot} from "@lodestar/types";
-import {ForkSeq, MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS} from "@lodestar/params";
+import {ForkSeq} from "@lodestar/params";
 import {ChainForkConfig} from "@lodestar/config";
 
 export enum BlockInputType {
   preDeneb = "preDeneb",
   postDeneb = "postDeneb",
+  blobsPromise = "blobsPromise",
 }
 
-export type BlockInput =
-  | {type: BlockInputType.preDeneb; block: allForks.SignedBeaconBlock}
-  | {type: BlockInputType.postDeneb; block: allForks.SignedBeaconBlock; blobs: deneb.BlobsSidecar};
+/** Enum to represent where blocks come from */
+export enum BlockSource {
+  gossip = "gossip",
+  api = "api",
+  byRange = "req_resp_by_range",
+  byRoot = "req_resp_by_root",
+}
+
+export enum GossipedInputType {
+  block = "block",
+  blob = "blob",
+}
+
+export type BlobsCache = Map<number, {blobSidecar: deneb.BlobSidecar; blobBytes: Uint8Array | null}>;
+export type BlockInputBlobs = {blobs: deneb.BlobSidecars; blobsBytes: (Uint8Array | null)[]};
+
+export type BlockInput = {block: allForks.SignedBeaconBlock; source: BlockSource; blockBytes: Uint8Array | null} & (
+  | {type: BlockInputType.preDeneb}
+  | ({type: BlockInputType.postDeneb} & BlockInputBlobs)
+  | {type: BlockInputType.blobsPromise; blobsCache: BlobsCache; availabilityPromise: Promise<BlockInputBlobs>}
+);
 
 export function blockRequiresBlobs(config: ChainForkConfig, blockSlot: Slot, clockSlot: Slot): boolean {
   return (
     config.getForkSeq(blockSlot) >= ForkSeq.deneb &&
     // Only request blobs if they are recent enough
-    computeEpochAtSlot(blockSlot) >= computeEpochAtSlot(clockSlot) - MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS
+    computeEpochAtSlot(blockSlot) >= computeEpochAtSlot(clockSlot) - config.MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS
   );
 }
 
 export const getBlockInput = {
-  preDeneb(config: ChainForkConfig, block: allForks.SignedBeaconBlock): BlockInput {
+  preDeneb(
+    config: ChainForkConfig,
+    block: allForks.SignedBeaconBlock,
+    source: BlockSource,
+    blockBytes: Uint8Array | null
+  ): BlockInput {
     if (config.getForkSeq(block.message.slot) >= ForkSeq.deneb) {
       throw Error(`Post Deneb block slot ${block.message.slot}`);
     }
     return {
       type: BlockInputType.preDeneb,
       block,
+      source,
+      blockBytes,
     };
   },
 
-  postDeneb(config: ChainForkConfig, block: allForks.SignedBeaconBlock, blobs: deneb.BlobsSidecar): BlockInput {
+  postDeneb(
+    config: ChainForkConfig,
+    block: allForks.SignedBeaconBlock,
+    source: BlockSource,
+    blobs: deneb.BlobSidecars,
+    blockBytes: Uint8Array | null,
+    blobsBytes: (Uint8Array | null)[]
+  ): BlockInput {
     if (config.getForkSeq(block.message.slot) < ForkSeq.deneb) {
       throw Error(`Pre Deneb block slot ${block.message.slot}`);
     }
     return {
       type: BlockInputType.postDeneb,
       block,
+      source,
       blobs,
+      blockBytes,
+      blobsBytes,
+    };
+  },
+
+  blobsPromise(
+    config: ChainForkConfig,
+    block: allForks.SignedBeaconBlock,
+    source: BlockSource,
+    blobsCache: BlobsCache,
+    blockBytes: Uint8Array | null,
+    availabilityPromise: Promise<BlockInputBlobs>
+  ): BlockInput {
+    if (config.getForkSeq(block.message.slot) < ForkSeq.deneb) {
+      throw Error(`Pre Deneb block slot ${block.message.slot}`);
+    }
+    return {
+      type: BlockInputType.blobsPromise,
+      block,
+      source,
+      blobsCache,
+      blockBytes,
+      availabilityPromise,
     };
   },
 };
@@ -47,6 +104,17 @@ export const getBlockInput = {
 export enum AttestationImportOpt {
   Skip,
   Force,
+}
+
+export enum BlobSidecarValidation {
+  /** When recieved in gossip the blobs are individually verified before import */
+  Individual,
+  /**
+   * Blobs when recieved in req/resp can be fully verified before import
+   * but currently used in spec tests where blobs come without proofs and assumed
+   * to be valid
+   */
+  Full,
 }
 
 export type ImportBlockOpts = {
@@ -82,10 +150,12 @@ export type ImportBlockOpts = {
    * Metadata: `true` if all the signatures including the proposer signature have been verified
    */
   validSignatures?: boolean;
-  /** Set to true if already run `validateBlobsSidecar()` sucessfully on the blobs */
-  validBlobsSidecar?: boolean;
+  /** Set to true if already run `validateBlobSidecars()` sucessfully on the blobs */
+  validBlobSidecars?: BlobSidecarValidation;
   /** Seen timestamp seconds */
   seenTimestampSec?: number;
+  /** Set to true if persist block right at verification time */
+  eagerPersistBlock?: boolean;
 };
 
 /**
@@ -101,6 +171,7 @@ export type FullyVerifiedBlock = {
    * used in optimistic sync or for merge block
    */
   executionStatus: MaybeValidExecutionStatus;
+  dataAvailableStatus: DataAvailableStatus;
   /** Seen timestamp seconds */
   seenTimestampSec: number;
 };

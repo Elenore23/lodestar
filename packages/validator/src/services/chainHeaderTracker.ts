@@ -1,8 +1,8 @@
+import {fromHexString} from "@chainsafe/ssz";
 import {Api, routes} from "@lodestar/api";
 import {Logger} from "@lodestar/utils";
 import {Slot, Root, RootHex} from "@lodestar/types";
 import {GENESIS_SLOT} from "@lodestar/params";
-import {fromHexString} from "@chainsafe/ssz";
 import {ValidatorEvent, ValidatorEventEmitter} from "./emitter.js";
 
 const {EventType} = routes.events;
@@ -31,8 +31,10 @@ export class ChainHeaderTracker {
   ) {}
 
   start(signal: AbortSignal): void {
-    void this.api.events.eventstream([EventType.head], signal, this.onHeadUpdate);
-    this.logger.verbose("Subscribed to head event");
+    this.logger.verbose("Subscribing to head event");
+    this.api.events
+      .eventstream([EventType.head], signal, this.onHeadUpdate)
+      .catch((e) => this.logger.error("Failed to subscribe to head event", {}, e));
   }
 
   getCurrentChainHead(slot: Slot): Root | null {

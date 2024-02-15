@@ -1,8 +1,8 @@
+import {toHexString} from "@chainsafe/ssz";
 import {BLSSignature, phase0, Slot, ssz} from "@lodestar/types";
 import {computeEpochAtSlot, isAggregatorFromCommitteeLength} from "@lodestar/state-transition";
 import {sleep} from "@lodestar/utils";
 import {Api, ApiError, routes} from "@lodestar/api";
-import {toHexString} from "@chainsafe/ssz";
 import {IClock, LoggerVc} from "../util/index.js";
 import {PubkeyHex} from "../types.js";
 import {Metrics} from "../metrics.js";
@@ -92,14 +92,18 @@ export class AttestationService {
       await Promise.all(
         Array.from(dutiesByCommitteeIndex.entries()).map(([index, duties]) =>
           this.runAttestationTasksPerCommittee(duties, slot, index, signal).catch((e) => {
-            this.logger.error("Error on attestation routine", {slot, index}, e);
+            this.logger.error("Error on committee attestation routine", {slot, index}, e);
           })
         )
       );
     } else {
-      // Beacon node's endpoint produceAttestationData return data is not dependant on committeeIndex.
+      // Beacon node's endpoint produceAttestationData return data is not dependent on committeeIndex.
       // Produce a single attestation for all committees and submit unaggregated attestations in one go.
-      await this.runAttestationTasksGrouped(duties, slot, signal);
+      try {
+        await this.runAttestationTasksGrouped(duties, slot, signal);
+      } catch (e) {
+        this.logger.error("Error on attestation routine", {slot}, e as Error);
+      }
     }
   };
 
@@ -155,7 +159,7 @@ export class AttestationService {
 
   /**
    * Performs the first step of the attesting process: downloading one `Attestation` object.
-   * Beacon node's endpoint produceAttestationData return data is not dependant on committeeIndex.
+   * Beacon node's endpoint produceAttestationData return data is not dependent on committeeIndex.
    * For a validator client with many validators this allows to do a single call for all committees
    * in a slot, saving resources in both the vc and beacon node
    *
@@ -318,9 +322,7 @@ export class AttestationService {
     this.logger.debug("Submitting partial beacon committee selection proofs", {slot, count: partialSelections.length});
 
     const res = await Promise.race([
-      this.api.validator
-        .submitBeaconCommitteeSelections(partialSelections)
-        .catch((e) => this.logger.error("Error on submitBeaconCommitteeSelections", {slot}, e)),
+      this.api.validator.submitBeaconCommitteeSelections(partialSelections),
       // Exit attestation aggregation flow if there is no response after 1/3 of slot as
       // beacon node would likely not have enough time to prepare an aggregate attestation.
       // Note that the aggregations flow is not explicitly exited but rather will be skipped
@@ -330,7 +332,7 @@ export class AttestationService {
     ]);
 
     if (!res) {
-      throw new Error("submitBeaconCommitteeSelections did not resolve after 1/3 of slot");
+      throw new Error("Failed to receive combined selection proofs before 1/3 of slot");
     }
     ApiError.assert(res, "Error receiving combined selection proofs");
 

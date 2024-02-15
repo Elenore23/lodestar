@@ -1,47 +1,28 @@
-import {expect} from "chai";
+import {describe, it, expect} from "vitest";
 import all from "it-all";
 import {pipe} from "it-pipe";
-import varint from "varint";
+import {encode as varintEncode} from "uint8-varint";
 import {writeSszSnappyPayload} from "../../../../src/encodingStrategies/sszSnappy/encode.js";
-import {EncodedPayload, EncodedPayloadType} from "../../../../src/types.js";
-import {
-  encodingStrategiesEncodingErrorCases,
-  encodingStrategiesMainnetTestCases,
-  encodingStrategiesTestCases,
-} from "../../../fixtures/index.js";
-import {expectRejectedWithLodestarError} from "../../../utils/errors.js";
+import {encodingStrategiesMainnetTestCases, encodingStrategiesTestCases} from "../../../fixtures/index.js";
 import {expectEqualByteChunks} from "../../../utils/index.js";
 
 describe("encodingStrategies / sszSnappy / encode", () => {
-  for (const {id, type, payload, chunks} of encodingStrategiesTestCases) {
-    it(id, async () => {
-      const encodedChunks = await pipe(writeSszSnappyPayload(payload as EncodedPayload<unknown>, type), all);
-      expectEqualByteChunks(
-        encodedChunks as Uint8Array[],
-        chunks.map((c) => c.subarray())
-      );
-    });
-  }
-
-  describe("mainnet cases", () => {
-    for (const {id, payload, type: serializer, streamedBody} of encodingStrategiesMainnetTestCases) {
-      it(id, async () => {
-        const bodySize =
-          payload.type === EncodedPayloadType.ssz ? serializer.serialize(payload.data).length : payload.bytes.length;
-
-        const encodedChunks = await pipe(writeSszSnappyPayload(payload, serializer), all);
-        const encodedStream = Buffer.concat(encodedChunks as Uint8Array[]);
-        const expectedStreamed = Buffer.concat([Buffer.from(varint.encode(bodySize)), streamedBody]);
-        expect(encodedStream).to.be.deep.equal(expectedStreamed);
-      });
-    }
+  it.each(encodingStrategiesTestCases)("$id", async ({binaryPayload, chunks}) => {
+    const encodedChunks = await pipe(writeSszSnappyPayload(Buffer.from(binaryPayload.data)), all);
+    expectEqualByteChunks(
+      encodedChunks as Uint8Array[],
+      chunks.map((c) => c.subarray())
+    );
   });
 
-  describe("error cases", () => {
-    for (const {id, type, payload, error} of encodingStrategiesEncodingErrorCases) {
-      it(id, async () => {
-        await expectRejectedWithLodestarError(pipe(writeSszSnappyPayload(payload, type), all), error);
-      });
-    }
+  describe("mainnet cases", () => {
+    it.each(encodingStrategiesMainnetTestCases)("$id", async ({payload, streamedBody}) => {
+      const bodySize = payload.data.length;
+
+      const encodedChunks = await pipe(writeSszSnappyPayload(Buffer.from(payload.data)), all);
+      const encodedStream = Buffer.concat(encodedChunks as Uint8Array[]);
+      const expectedStreamed = Buffer.concat([Buffer.from(varintEncode(bodySize)), streamedBody]);
+      expect(encodedStream).toEqual(expectedStreamed);
+    });
   });
 });

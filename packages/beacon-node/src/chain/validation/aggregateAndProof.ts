@@ -1,10 +1,9 @@
 import {toHexString} from "@chainsafe/ssz";
+import {ForkName} from "@lodestar/params";
 import {phase0, RootHex, ssz, ValidatorIndex} from "@lodestar/types";
 import {
   computeEpochAtSlot,
   isAggregatorFromCommitteeLength,
-  getIndexedAttestationSignatureSet,
-  ISignatureSet,
   createAggregateSignatureSetFromComponents,
 } from "@lodestar/state-transition";
 import {IBeaconChain} from "..";
@@ -12,7 +11,13 @@ import {AttestationError, AttestationErrorCode, GossipAction} from "../errors/in
 import {RegenCaller} from "../regen/index.js";
 import {getAttDataBase64FromSignedAggregateAndProofSerialized} from "../../util/sszBytes.js";
 import {getSelectionProofSignatureSet, getAggregateAndProofSignatureSet} from "./signatureSets/index.js";
-import {getCommitteeIndices, verifyHeadBlockAndTargetRoot, verifyPropagationSlotRange} from "./attestation.js";
+import {
+  getAttestationDataSigningRoot,
+  getCommitteeIndices,
+  getShufflingForAttestationVerification,
+  verifyHeadBlockAndTargetRoot,
+  verifyPropagationSlotRange,
+} from "./attestation.js";
 
 export type AggregateAndProofValidationResult = {
   indexedAttestation: phase0.IndexedAttestation;
@@ -20,12 +25,39 @@ export type AggregateAndProofValidationResult = {
   attDataRootHex: RootHex;
 };
 
+export async function validateApiAggregateAndProof(
+  fork: ForkName,
+  chain: IBeaconChain,
+  signedAggregateAndProof: phase0.SignedAggregateAndProof
+): Promise<AggregateAndProofValidationResult> {
+  const skipValidationKnownAttesters = true;
+  const prioritizeBls = true;
+  return validateAggregateAndProof(fork, chain, signedAggregateAndProof, null, {
+    skipValidationKnownAttesters,
+    prioritizeBls,
+  });
+}
+
 export async function validateGossipAggregateAndProof(
+  fork: ForkName,
   chain: IBeaconChain,
   signedAggregateAndProof: phase0.SignedAggregateAndProof,
-  skipValidationKnownAttesters = false,
-  serializedData: Uint8Array | null = null
+  serializedData: Uint8Array
 ): Promise<AggregateAndProofValidationResult> {
+  return validateAggregateAndProof(fork, chain, signedAggregateAndProof, serializedData);
+}
+
+async function validateAggregateAndProof(
+  fork: ForkName,
+  chain: IBeaconChain,
+  signedAggregateAndProof: phase0.SignedAggregateAndProof,
+  serializedData: Uint8Array | null = null,
+  opts: {skipValidationKnownAttesters: boolean; prioritizeBls: boolean} = {
+    skipValidationKnownAttesters: false,
+    prioritizeBls: false,
+  }
+): Promise<AggregateAndProofValidationResult> {
+  const {skipValidationKnownAttesters, prioritizeBls} = opts;
   // Do checks in this order:
   // - do early checks (w/o indexed attestation)
   // - > obtain indexed attestation and committes per slot
@@ -47,6 +79,11 @@ export async function validateGossipAggregateAndProof(
   const attTarget = attData.target;
   const targetEpoch = attTarget.epoch;
 
+  chain.metrics?.gossipAttestation.attestationSlotToClockSlot.observe(
+    {caller: RegenCaller.validateGossipAggregateAndProof},
+    chain.clock.currentSlot - attSlot
+  );
+
   if (!cachedAttData) {
     // [REJECT] The attestation's epoch matches its target -- i.e. attestation.data.target.epoch == compute_epoch_at_slot(attestation.data.slot)
     if (targetEpoch !== attEpoch) {
@@ -56,7 +93,7 @@ export async function validateGossipAggregateAndProof(
     // [IGNORE] aggregate.data.slot is within the last ATTESTATION_PROPAGATION_SLOT_RANGE slots (with a MAXIMUM_GOSSIP_CLOCK_DISPARITY allowance)
     // -- i.e. aggregate.data.slot + ATTESTATION_PROPAGATION_SLOT_RANGE >= current_slot >= aggregate.data.slot
     // (a client MAY queue future aggregates for processing at the appropriate slot).
-    verifyPropagationSlotRange(chain, attSlot);
+    verifyPropagationSlotRange(fork, chain, attSlot);
   }
 
   // [IGNORE] The aggregate is the first valid aggregate received for the aggregator with
@@ -96,6 +133,7 @@ export async function validateGossipAggregateAndProof(
     attTarget.root,
     attSlot,
     attEpoch,
+    RegenCaller.validateGossipAggregateAndProof,
     chain.opts.maxSkipSlots
   );
 
@@ -103,21 +141,16 @@ export async function validateGossipAggregateAndProof(
   // -- i.e. get_ancestor(store, aggregate.data.beacon_block_root, compute_start_slot_at_epoch(store.finalized_checkpoint.epoch)) == store.finalized_checkpoint.root
   // > Altready check in `chain.forkChoice.hasBlock(attestation.data.beaconBlockRoot)`
 
-  // Using the target checkpoint state here caused unstable memory issue
-  // See https://github.com/ChainSafe/lodestar/issues/4896
-  // TODO: https://github.com/ChainSafe/lodestar/issues/4900
-  const attHeadState = await chain.regen
-    .getState(attHeadBlock.stateRoot, RegenCaller.validateGossipAggregateAndProof)
-    .catch((e: Error) => {
-      throw new AttestationError(GossipAction.IGNORE, {
-        code: AttestationErrorCode.MISSING_ATTESTATION_HEAD_STATE,
-        error: e as Error,
-      });
-    });
+  const shuffling = await getShufflingForAttestationVerification(
+    chain,
+    attEpoch,
+    attHeadBlock,
+    RegenCaller.validateGossipAttestation
+  );
 
   const committeeIndices: number[] = cachedAttData
     ? cachedAttData.committeeIndices
-    : getCommitteeIndices(attHeadState, attSlot, attIndex);
+    : getCommitteeIndices(shuffling, attSlot, attIndex);
 
   const attestingIndices = aggregate.aggregationBits.intersectValues(committeeIndices);
   const indexedAttestation: phase0.IndexedAttestation = {
@@ -150,26 +183,21 @@ export async function validateGossipAggregateAndProof(
   // by the validator with index aggregate_and_proof.aggregator_index.
   // [REJECT] The aggregator signature, signed_aggregate_and_proof.signature, is valid.
   // [REJECT] The signature of aggregate is valid.
-  const aggregator = attHeadState.epochCtx.index2pubkey[aggregateAndProof.aggregatorIndex];
-  let indexedAttestationSignatureSet: ISignatureSet;
-  if (cachedAttData) {
-    const {signingRoot} = cachedAttData;
-    indexedAttestationSignatureSet = createAggregateSignatureSetFromComponents(
-      indexedAttestation.attestingIndices.map((i) => chain.index2pubkey[i]),
-      signingRoot,
-      indexedAttestation.signature
-    );
-  } else {
-    indexedAttestationSignatureSet = getIndexedAttestationSignatureSet(attHeadState, indexedAttestation);
-  }
+  const aggregator = chain.index2pubkey[aggregateAndProof.aggregatorIndex];
+  const signingRoot = cachedAttData ? cachedAttData.signingRoot : getAttestationDataSigningRoot(chain.config, attData);
+  const indexedAttestationSignatureSet = createAggregateSignatureSetFromComponents(
+    indexedAttestation.attestingIndices.map((i) => chain.index2pubkey[i]),
+    signingRoot,
+    indexedAttestation.signature
+  );
   const signatureSets = [
-    getSelectionProofSignatureSet(attHeadState, attSlot, aggregator, signedAggregateAndProof),
-    getAggregateAndProofSignatureSet(attHeadState, attEpoch, aggregator, signedAggregateAndProof),
+    getSelectionProofSignatureSet(chain.config, attSlot, aggregator, signedAggregateAndProof),
+    getAggregateAndProofSignatureSet(chain.config, attEpoch, aggregator, signedAggregateAndProof),
     indexedAttestationSignatureSet,
   ];
   // no need to write to SeenAttestationDatas
 
-  if (!(await chain.bls.verifySignatureSets(signatureSets, {batchable: true}))) {
+  if (!(await chain.bls.verifySignatureSets(signatureSets, {batchable: true, priority: prioritizeBls}))) {
     throw new AttestationError(GossipAction.REJECT, {code: AttestationErrorCode.INVALID_SIGNATURE});
   }
 

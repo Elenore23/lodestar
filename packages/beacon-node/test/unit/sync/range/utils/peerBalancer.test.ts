@@ -1,16 +1,16 @@
-import {expect} from "chai";
-import {createSecp256k1PeerId} from "@libp2p/peer-id-factory";
+import {describe, it, expect} from "vitest";
 import {config} from "@lodestar/config/default";
 import {Batch} from "../../../../../src/sync/range/batch.js";
 import {ChainPeersBalancer} from "../../../../../src/sync/range/utils/peerBalancer.js";
+import {getRandPeerIdStr} from "../../../../utils/peer.js";
 
 describe("sync / range / peerBalancer", () => {
   it("bestPeerToRetryBatch", async () => {
     // Run N times to make sure results are consistent with different shufflings
     for (let i = 0; i < 5; i++) {
-      const peer1 = await createSecp256k1PeerId();
-      const peer2 = await createSecp256k1PeerId();
-      const peer3 = await createSecp256k1PeerId();
+      const peer1 = await getRandPeerIdStr();
+      const peer2 = await getRandPeerIdStr();
+      const peer3 = await getRandPeerIdStr();
       const batch0 = new Batch(0, config);
       const batch1 = new Batch(1, config);
 
@@ -23,27 +23,21 @@ describe("sync / range / peerBalancer", () => {
 
       const peerBalancer = new ChainPeersBalancer([peer1, peer2, peer3], [batch0, batch1]);
 
-      expect(peerBalancer.bestPeerToRetryBatch(batch0)).to.equal(
-        peer3,
-        "peer1 has a failed attempt, and peer2 is busy, best peer to retry batch0 must be peer3"
-      );
+      expect(peerBalancer.bestPeerToRetryBatch(batch0)).toBe(peer3);
 
       batch0.startDownloading(peer3);
       batch0.downloadingError();
-      expect(peerBalancer.bestPeerToRetryBatch(batch0)).to.equal(
-        peer2,
-        "If peer3 also has a failed attempt for batch0, peer2 must become the best"
-      );
+      expect(peerBalancer.bestPeerToRetryBatch(batch0)).toBe(peer2);
     }
   });
 
   it("idlePeers", async () => {
     // Run N times to make sure results are consistent with different shufflings
     for (let i = 0; i < 5; i++) {
-      const peer1 = await createSecp256k1PeerId();
-      const peer2 = await createSecp256k1PeerId();
-      const peer3 = await createSecp256k1PeerId();
-      const peer4 = await createSecp256k1PeerId();
+      const peer1 = await getRandPeerIdStr();
+      const peer2 = await getRandPeerIdStr();
+      const peer3 = await getRandPeerIdStr();
+      const peer4 = await getRandPeerIdStr();
       const batch0 = new Batch(0, config);
       const batch1 = new Batch(1, config);
 
@@ -57,7 +51,7 @@ describe("sync / range / peerBalancer", () => {
 
       const idlePeersIds = idlePeers.map((p) => p.toString()).sort();
       const expectedIds = [peer3, peer4].map((p) => p.toString()).sort();
-      expect(idlePeersIds).to.deep.equal(expectedIds, "Wrong idlePeers (encoded as B58String)");
+      expect(idlePeersIds).toEqual(expectedIds);
     }
   });
 });

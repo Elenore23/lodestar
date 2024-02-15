@@ -21,7 +21,8 @@ export enum WorkResultCode {
   error = "error",
 }
 
-export type WorkResult<R> = {code: WorkResultCode.success; result: R} | {code: WorkResultCode.error; error: Error};
+export type WorkResultError = {code: WorkResultCode.error; error: Error};
+export type WorkResult<R> = {code: WorkResultCode.success; result: R} | WorkResultError;
 
 export type BlsWorkResult = {
   /** Ascending integer identifying the worker for metrics */
@@ -30,9 +31,9 @@ export type BlsWorkResult = {
   batchRetries: number;
   /** Total num of sigs that have been successfully verified with batching */
   batchSigsSuccess: number;
-  /** Time worker function starts - UNIX timestamp in nanoseconds */
-  workerStartNs: bigint;
-  /** Time worker function ends - UNIX timestamp in nanoseconds */
-  workerEndNs: bigint;
+  /** Time worker function starts - UNIX timestamp in seconds and nanoseconds */
+  workerStartTime: [number, number];
+  /** Time worker function ends - UNIX timestamp in seconds and nanoseconds */
+  workerEndTime: [number, number];
   results: WorkResult<boolean>[];
 };

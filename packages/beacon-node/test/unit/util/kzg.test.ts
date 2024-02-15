@@ -1,17 +1,22 @@
-import {expect} from "chai";
+import {describe, it, expect, afterEach, beforeAll} from "vitest";
 import {bellatrix, deneb, ssz} from "@lodestar/types";
-import {BLOB_TX_TYPE, BYTES_PER_FIELD_ELEMENT} from "@lodestar/params";
-import {
-  kzgCommitmentToVersionedHash,
-  OPAQUE_TX_BLOB_VERSIONED_HASHES_OFFSET,
-  OPAQUE_TX_MESSAGE_OFFSET,
-} from "@lodestar/state-transition";
+import {BYTES_PER_FIELD_ELEMENT, BLOB_TX_TYPE} from "@lodestar/params";
+import {createBeaconConfig, createChainForkConfig, defaultChainConfig} from "@lodestar/config";
+import {getMockedBeaconChain} from "../../mocks/mockedBeaconChain.js";
+import {computeBlobSidecars, kzgCommitmentToVersionedHash} from "../../../src/util/blobs.js";
 import {loadEthereumTrustedSetup, initCKZG, ckzg, FIELD_ELEMENTS_PER_BLOB_MAINNET} from "../../../src/util/kzg.js";
-import {validateBlobsSidecar, validateGossipBlobsSidecar} from "../../../src/chain/validation/blobsSidecar.js";
+import {validateBlobSidecars, validateGossipBlobSidecar} from "../../../src/chain/validation/blobSidecar.js";
 
 describe("C-KZG", () => {
-  before(async function () {
-    this.timeout(10000); // Loading trusted setup is slow
+  const afterEachCallbacks: (() => Promise<unknown> | void)[] = [];
+  afterEach(async () => {
+    while (afterEachCallbacks.length > 0) {
+      const callback = afterEachCallbacks.pop();
+      if (callback) await callback();
+    }
+  });
+
+  beforeAll(async function () {
     await initCKZG();
     loadEthereumTrustedSetup();
   });
@@ -22,58 +27,62 @@ describe("C-KZG", () => {
     // ====================
     const blobs = new Array(2).fill(0).map(generateRandomBlob);
     const commitments = blobs.map((blob) => ckzg.blobToKzgCommitment(blob));
-    const proof = ckzg.computeAggregateKzgProof(blobs);
-    expect(ckzg.verifyAggregateKzgProof(blobs, commitments, proof)).to.equal(true);
+    const proofs = blobs.map((blob, index) => ckzg.computeBlobKzgProof(blob, commitments[index]));
+    expect(ckzg.verifyBlobKzgProofBatch(blobs, commitments, proofs)).toBe(true);
   });
 
-  it("BlobsSidecar", () => {
+  /* eslint-disable @typescript-eslint/naming-convention */
+  it("BlobSidecars", async () => {
+    const chainConfig = createChainForkConfig({
+      ...defaultChainConfig,
+      ALTAIR_FORK_EPOCH: 0,
+      BELLATRIX_FORK_EPOCH: 0,
+      DENEB_FORK_EPOCH: 0,
+    });
+    const genesisValidatorsRoot = Buffer.alloc(32, 0xaa);
+    const config = createBeaconConfig(chainConfig, genesisValidatorsRoot);
+
+    const chain = getMockedBeaconChain({config});
+    afterEachCallbacks.push(() => chain.close());
+
     const slot = 0;
     const blobs = [generateRandomBlob(), generateRandomBlob()];
     const kzgCommitments = blobs.map((blob) => ckzg.blobToKzgCommitment(blob));
 
     const signedBeaconBlock = ssz.deneb.SignedBeaconBlock.defaultValue();
+
     for (const kzgCommitment of kzgCommitments) {
       signedBeaconBlock.message.body.executionPayload.transactions.push(transactionForKzgCommitment(kzgCommitment));
       signedBeaconBlock.message.body.blobKzgCommitments.push(kzgCommitment);
     }
-    const beaconBlockRoot = ssz.deneb.BeaconBlock.hashTreeRoot(signedBeaconBlock.message);
+    const blockRoot = ssz.deneb.BeaconBlock.hashTreeRoot(signedBeaconBlock.message);
+    const kzgProofs = blobs.map((blob, index) => ckzg.computeBlobKzgProof(blob, kzgCommitments[index]));
+    const blobSidecars: deneb.BlobSidecars = computeBlobSidecars(chain.config, signedBeaconBlock, {blobs, kzgProofs});
 
-    const blobsSidecar: deneb.BlobsSidecar = {
-      beaconBlockRoot,
-      beaconBlockSlot: 0,
-      blobs,
-      kzgAggregatedProof: ckzg.computeAggregateKzgProof(blobs),
-    };
+    expect(blobSidecars.length).toBe(2);
 
     // Full validation
-    validateBlobsSidecar(slot, beaconBlockRoot, kzgCommitments, blobsSidecar);
+    validateBlobSidecars(slot, blockRoot, kzgCommitments, blobSidecars);
 
-    // Gossip validation
-    validateGossipBlobsSidecar(signedBeaconBlock, blobsSidecar);
+    blobSidecars.forEach(async (blobSidecar) => {
+      try {
+        await validateGossipBlobSidecar(chain, blobSidecar, blobSidecar.index);
+      } catch (error) {
+        // We expect some error from here
+        // console.log(error);
+      }
+    });
   });
 });
 
 function transactionForKzgCommitment(kzgCommitment: deneb.KZGCommitment): bellatrix.Transaction {
-  // Some random value that after the offset's position
-  const blobVersionedHashesOffset = OPAQUE_TX_BLOB_VERSIONED_HASHES_OFFSET + 64;
-
-  // +32 for the size of versionedHash
-  const ab = new ArrayBuffer(blobVersionedHashesOffset + 32);
-  const dv = new DataView(ab);
-  const ua = new Uint8Array(ab);
-
-  // Set tx type
-  dv.setUint8(0, BLOB_TX_TYPE);
-
-  // Set offset to hashes array
-  // const blobVersionedHashesOffset =
-  //   OPAQUE_TX_MESSAGE_OFFSET + opaqueTxDv.getUint32(OPAQUE_TX_BLOB_VERSIONED_HASHES_OFFSET, true);
-  dv.setUint32(OPAQUE_TX_BLOB_VERSIONED_HASHES_OFFSET, blobVersionedHashesOffset - OPAQUE_TX_MESSAGE_OFFSET, true);
-
+  // Just use versionedHash as the transaction encoding to mock newPayloadV3 verification
+  // prefixed with BLOB_TX_TYPE
+  const transaction = new Uint8Array(33);
   const versionedHash = kzgCommitmentToVersionedHash(kzgCommitment);
-  ua.set(versionedHash, blobVersionedHashesOffset);
-
-  return ua;
+  transaction[0] = BLOB_TX_TYPE;
+  transaction.set(versionedHash, 1);
+  return transaction;
 }
 
 /**

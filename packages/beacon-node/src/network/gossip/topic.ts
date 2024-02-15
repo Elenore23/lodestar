@@ -6,6 +6,7 @@ import {
   ForkSeq,
   SYNC_COMMITTEE_SUBNET_COUNT,
   isForkLightClient,
+  MAX_BLOBS_PER_BLOCK,
 } from "@lodestar/params";
 
 import {GossipAction, GossipActionError, GossipErrorCode} from "../../chain/errors/gossipValidation.js";
@@ -60,7 +61,6 @@ export function stringifyGossipTopic(forkDigestContext: ForkDigestContext, topic
 function stringifyGossipTopicType(topic: GossipTopic): string {
   switch (topic.type) {
     case GossipType.beacon_block:
-    case GossipType.beacon_block_and_blobs_sidecar:
     case GossipType.beacon_aggregate_and_proof:
     case GossipType.voluntary_exit:
     case GossipType.proposer_slashing:
@@ -73,6 +73,8 @@ function stringifyGossipTopicType(topic: GossipTopic): string {
     case GossipType.beacon_attestation:
     case GossipType.sync_committee:
       return `${topic.type}_${topic.subnet}`;
+    case GossipType.blob_sidecar:
+      return `${topic.type}_${topic.index}`;
   }
 }
 
@@ -82,8 +84,8 @@ export function getGossipSSZType(topic: GossipTopic) {
     case GossipType.beacon_block:
       // beacon_block is updated in altair to support the updated SignedBeaconBlock type
       return ssz[topic.fork].SignedBeaconBlock;
-    case GossipType.beacon_block_and_blobs_sidecar:
-      return ssz.deneb.SignedBeaconBlockAndBlobsSidecar;
+    case GossipType.blob_sidecar:
+      return ssz.deneb.BlobSidecar;
     case GossipType.beacon_aggregate_and_proof:
       return ssz.phase0.SignedAggregateAndProof;
     case GossipType.beacon_attestation:
@@ -160,7 +162,6 @@ export function parseGossipTopic(forkDigestContext: ForkDigestContext, topicStr:
     // Inline-d the parseGossipTopicType() function since spreading the resulting object x4 the time to parse a topicStr
     switch (gossipTypeStr) {
       case GossipType.beacon_block:
-      case GossipType.beacon_block_and_blobs_sidecar:
       case GossipType.beacon_aggregate_and_proof:
       case GossipType.voluntary_exit:
       case GossipType.proposer_slashing:
@@ -181,6 +182,13 @@ export function parseGossipTopic(forkDigestContext: ForkDigestContext, topicStr:
       }
     }
 
+    if (gossipTypeStr.startsWith(GossipType.blob_sidecar)) {
+      const indexStr = gossipTypeStr.slice(GossipType.blob_sidecar.length + 1); // +1 for '_' concatenating the topic name and the index
+      const index = parseInt(indexStr, 10);
+      if (Number.isNaN(index)) throw Error(`index ${indexStr} is not a number`);
+      return {type: GossipType.blob_sidecar, index, fork, encoding};
+    }
+
     throw Error(`Unknown gossip type ${gossipTypeStr}`);
   } catch (e) {
     (e as Error).message = `Invalid gossip topic ${topicStr}: ${(e as Error).message}`;
@@ -197,18 +205,18 @@ export function getCoreTopicsAtFork(
 ): GossipTopicTypeMap[keyof GossipTopicTypeMap][] {
   // Common topics for all forks
   const topics: GossipTopicTypeMap[keyof GossipTopicTypeMap][] = [
-    // {type: GossipType.beacon_block}, // Handled below
+    {type: GossipType.beacon_block},
     {type: GossipType.beacon_aggregate_and_proof},
     {type: GossipType.voluntary_exit},
     {type: GossipType.proposer_slashing},
     {type: GossipType.attester_slashing},
   ];
 
-  // After Deneb only track beacon_block_and_blobs_sidecar topic
-  if (ForkSeq[fork] < ForkSeq.deneb) {
-    topics.push({type: GossipType.beacon_block});
-  } else {
-    topics.push({type: GossipType.beacon_block_and_blobs_sidecar});
+  // After Deneb also track blob_sidecar_{index}
+  if (ForkSeq[fork] >= ForkSeq.deneb) {
+    for (let index = 0; index < MAX_BLOBS_PER_BLOCK; index++) {
+      topics.push({type: GossipType.blob_sidecar, index});
+    }
   }
 
   // capella
@@ -249,3 +257,19 @@ function parseEncodingStr(encodingStr: string): GossipEncoding {
       throw Error(`Unknown encoding ${encodingStr}`);
   }
 }
+
+// TODO: Review which yes, and which not
+export const gossipTopicIgnoreDuplicatePublishError: Record<GossipType, boolean> = {
+  [GossipType.beacon_block]: true,
+  [GossipType.blob_sidecar]: true,
+  [GossipType.beacon_aggregate_and_proof]: true,
+  [GossipType.beacon_attestation]: true,
+  [GossipType.voluntary_exit]: true,
+  [GossipType.proposer_slashing]: false, // Why not this ones?
+  [GossipType.attester_slashing]: false,
+  [GossipType.sync_committee_contribution_and_proof]: true,
+  [GossipType.sync_committee]: true,
+  [GossipType.light_client_finality_update]: false,
+  [GossipType.light_client_optimistic_update]: false,
+  [GossipType.bls_to_execution_change]: true,
+};

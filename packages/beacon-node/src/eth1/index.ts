@@ -1,12 +1,13 @@
+import {fromHexString} from "@chainsafe/ssz";
 import {CachedBeaconStateAllForks} from "@lodestar/state-transition";
 import {Root} from "@lodestar/types";
-import {fromHexString} from "@chainsafe/ssz";
 import {IEth1ForBlockProduction, Eth1DataAndDeposits, IEth1Provider, PowMergeBlock, TDProgress} from "./interface.js";
 import {Eth1DepositDataTracker, Eth1DepositDataTrackerModules} from "./eth1DepositDataTracker.js";
 import {Eth1MergeBlockTracker, Eth1MergeBlockTrackerModules} from "./eth1MergeBlockTracker.js";
 import {Eth1Options} from "./options.js";
 import {Eth1Provider} from "./provider/eth1Provider.js";
-export {IEth1ForBlockProduction, IEth1Provider, Eth1Provider};
+export {Eth1Provider};
+export type {IEth1ForBlockProduction, IEth1Provider};
 
 // This module encapsulates all consumer functionality to the execution node (formerly eth1). The execution client
 // has to:
@@ -66,7 +67,13 @@ export class Eth1ForBlockProduction implements IEth1ForBlockProduction {
     modules: Eth1DepositDataTrackerModules & Eth1MergeBlockTrackerModules & {eth1Provider?: IEth1Provider}
   ) {
     const eth1Provider =
-      modules.eth1Provider || new Eth1Provider(modules.config, opts, modules.signal, modules.metrics?.eth1HttpClient);
+      modules.eth1Provider ||
+      new Eth1Provider(
+        modules.config,
+        {...opts, logger: modules.logger},
+        modules.signal,
+        modules.metrics?.eth1HttpClient
+      );
 
     this.eth1DepositDataTracker = opts.disableEth1DepositDataTracker
       ? null

@@ -1,3 +1,4 @@
+import {toHexString} from "@chainsafe/ssz";
 import {
   CachedBeaconStateAllForks,
   isExecutionStateType,
@@ -5,8 +6,7 @@ import {
   isMergeTransitionBlock as isMergeTransitionBlockFn,
   isExecutionEnabled,
 } from "@lodestar/state-transition";
-import {bellatrix, allForks, Slot} from "@lodestar/types";
-import {toHexString} from "@chainsafe/ssz";
+import {bellatrix, allForks, Slot, deneb} from "@lodestar/types";
 import {
   IForkChoice,
   assertValidTerminalPowBlock,
@@ -18,11 +18,14 @@ import {
 } from "@lodestar/fork-choice";
 import {ChainForkConfig} from "@lodestar/config";
 import {ErrorAborted, Logger} from "@lodestar/utils";
-import {IExecutionEngine} from "../../execution/engine/index.js";
+import {ForkSeq, SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY} from "@lodestar/params";
+
+import {IExecutionEngine} from "../../execution/engine/interface.js";
 import {BlockError, BlockErrorCode} from "../errors/index.js";
-import {BeaconClock} from "../clock/index.js";
+import {IClock} from "../../util/clock.js";
+import {kzgCommitmentToVersionedHash} from "../../util/blobs.js";
 import {BlockProcessOpts} from "../options.js";
-import {ExecutePayloadStatus} from "../../execution/engine/interface.js";
+import {ExecutionPayloadStatus} from "../../execution/engine/interface.js";
 import {IEth1ForBlockProduction} from "../../eth1/index.js";
 import {Metrics} from "../../metrics/metrics.js";
 import {ImportBlockOpts} from "./types.js";
@@ -30,7 +33,7 @@ import {ImportBlockOpts} from "./types.js";
 export type VerifyBlockExecutionPayloadModules = {
   eth1: IEth1ForBlockProduction;
   executionEngine: IExecutionEngine;
-  clock: BeaconClock;
+  clock: IClock;
   logger: Logger;
   metrics: Metrics | null;
   forkChoice: IForkChoice;
@@ -42,9 +45,10 @@ export type SegmentExecStatus =
   | {
       execAborted: null;
       executionStatuses: MaybeValidExecutionStatus[];
+      executionTime: number;
       mergeBlockFound: bellatrix.BeaconBlock | null;
     }
-  | {execAborted: ExecAbortType; invalidSegmentLHV?: LVHInvalidResponse; mergeBlockFound: null};
+  | {execAborted: ExecAbortType; invalidSegmentLVH?: LVHInvalidResponse; mergeBlockFound: null};
 
 type VerifyExecutionErrorResponse =
   | {executionStatus: ExecutionStatus.Invalid; lvhResponse: LVHInvalidResponse; execError: BlockError}
@@ -140,9 +144,10 @@ export async function verifyBlocksExecutionPayload(
   const lastBlock = blocks[blocks.length - 1];
 
   const currentSlot = chain.clock.currentSlot;
+  const safeSlotsToImportOptimistically = opts.safeSlotsToImportOptimistically ?? SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY;
   let isOptimisticallySafe =
     parentBlock.executionStatus !== ExecutionStatus.PreMerge ||
-    lastBlock.message.slot + opts.safeSlotsToImportOptimistically < currentSlot;
+    lastBlock.message.slot + safeSlotsToImportOptimistically < currentSlot;
 
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
     const block = blocks[blockIndex];
@@ -239,8 +244,9 @@ export async function verifyBlocksExecutionPayload(
     }
   }
 
-  if (blocks.length === 1 && opts.seenTimestampSec !== undefined) {
-    const recvToVerifiedExecPayload = Date.now() / 1000 - opts.seenTimestampSec;
+  const executionTime = Date.now();
+  if (blocks.length === 1 && opts.seenTimestampSec !== undefined && executionStatuses[0] === ExecutionStatus.Valid) {
+    const recvToVerifiedExecPayload = executionTime / 1000 - opts.seenTimestampSec;
     chain.metrics?.gossipBlock.receivedToExecutionPayloadVerification.observe(recvToVerifiedExecPayload);
     chain.logger.verbose("Verified execution payload", {
       slot: blocks[0].message.slot,
@@ -251,6 +257,7 @@ export async function verifyBlocksExecutionPayload(
   return {
     execAborted: null,
     executionStatuses,
+    executionTime,
     mergeBlockFound,
   };
 }
@@ -285,21 +292,29 @@ export async function verifyBlockExecutionPayload(
   }
 
   // TODO: Handle better notifyNewPayload() returning error is syncing
+  const fork = chain.config.getForkName(block.message.slot);
+  const versionedHashes =
+    ForkSeq[fork] >= ForkSeq.deneb
+      ? (block.message.body as deneb.BeaconBlockBody).blobKzgCommitments.map(kzgCommitmentToVersionedHash)
+      : undefined;
+  const parentBlockRoot = ForkSeq[fork] >= ForkSeq.deneb ? block.message.parentRoot : undefined;
   const execResult = await chain.executionEngine.notifyNewPayload(
-    chain.config.getForkName(block.message.slot),
-    executionPayloadEnabled
+    fork,
+    executionPayloadEnabled,
+    versionedHashes,
+    parentBlockRoot
   );
 
   chain.metrics?.engineNotifyNewPayloadResult.inc({result: execResult.status});
 
   switch (execResult.status) {
-    case ExecutePayloadStatus.VALID: {
+    case ExecutionPayloadStatus.VALID: {
       const executionStatus: ExecutionStatus.Valid = ExecutionStatus.Valid;
       const lvhResponse = {executionStatus, latestValidExecHash: execResult.latestValidHash};
       return {executionStatus, lvhResponse, execError: null};
     }
 
-    case ExecutePayloadStatus.INVALID: {
+    case ExecutionPayloadStatus.INVALID: {
       const executionStatus: ExecutionStatus.Invalid = ExecutionStatus.Invalid;
       const lvhResponse = {
         executionStatus,
@@ -315,15 +330,17 @@ export async function verifyBlockExecutionPayload(
     }
 
     // Accepted and Syncing have the same treatment, as final validation of block is pending
-    case ExecutePayloadStatus.ACCEPTED:
-    case ExecutePayloadStatus.SYNCING: {
+    case ExecutionPayloadStatus.ACCEPTED:
+    case ExecutionPayloadStatus.SYNCING: {
       // Check if the entire segment was deemed safe or, this block specifically itself if not in
       // the safeSlotsToImportOptimistically window of current slot, then we can import else
       // we need to throw and not import his block
-      if (!isOptimisticallySafe && block.message.slot + opts.safeSlotsToImportOptimistically >= currentSlot) {
+      const safeSlotsToImportOptimistically =
+        opts.safeSlotsToImportOptimistically ?? SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY;
+      if (!isOptimisticallySafe && block.message.slot + safeSlotsToImportOptimistically >= currentSlot) {
         const execError = new BlockError(block, {
           code: BlockErrorCode.EXECUTION_ENGINE_ERROR,
-          execStatus: ExecutePayloadStatus.UNSAFE_OPTIMISTIC_STATUS,
+          execStatus: ExecutionPayloadStatus.UNSAFE_OPTIMISTIC_STATUS,
           errorMessage: `not safe to import ${execResult.status} payload within ${opts.safeSlotsToImportOptimistically} of currentSlot`,
         });
         return {executionStatus: null, execError} as VerifyBlockExecutionResponse;
@@ -349,9 +366,9 @@ export async function verifyBlockExecutionPayload(
     // back. But for now, lets assume other mechanisms like unknown parent block of a future
     // child block will cause it to replay
 
-    case ExecutePayloadStatus.INVALID_BLOCK_HASH:
-    case ExecutePayloadStatus.ELERROR:
-    case ExecutePayloadStatus.UNAVAILABLE: {
+    case ExecutionPayloadStatus.INVALID_BLOCK_HASH:
+    case ExecutionPayloadStatus.ELERROR:
+    case ExecutionPayloadStatus.UNAVAILABLE: {
       const execError = new BlockError(block, {
         code: BlockErrorCode.EXECUTION_ENGINE_ERROR,
         execStatus: execResult.status,
@@ -368,7 +385,7 @@ function getSegmentErrorResponse(
   blocks: allForks.SignedBeaconBlock[]
 ): SegmentExecStatus {
   const {executionStatus, lvhResponse, execError} = verifyResponse;
-  let invalidSegmentLHV: LVHInvalidResponse | undefined = undefined;
+  let invalidSegmentLVH: LVHInvalidResponse | undefined = undefined;
 
   if (
     executionStatus === ExecutionStatus.Invalid &&
@@ -396,7 +413,7 @@ function getSegmentErrorResponse(
       parentBlock.executionStatus !== ExecutionStatus.PreMerge &&
       parentBlock.executionPayloadBlockHash !== lvhResponse.latestValidExecHash
     ) {
-      invalidSegmentLHV = {
+      invalidSegmentLVH = {
         executionStatus: ExecutionStatus.Invalid,
         latestValidExecHash: lvhResponse.latestValidExecHash,
         invalidateFromBlockHash: parentBlock.blockRoot,
@@ -404,5 +421,5 @@ function getSegmentErrorResponse(
     }
   }
   const execAborted = {blockIndex, execError};
-  return {execAborted, invalidSegmentLHV} as SegmentExecStatus;
+  return {execAborted, invalidSegmentLVH} as SegmentExecStatus;
 }

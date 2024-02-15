@@ -3,8 +3,11 @@ import {
   BeaconStateAllForks,
   CachedBeaconStateAltair,
   computeEpochAtSlot,
+  computeStartSlotAtEpoch,
   getCurrentEpoch,
+  getRandaoMix,
 } from "@lodestar/state-transition";
+import {EPOCHS_PER_HISTORICAL_VECTOR} from "@lodestar/params";
 import {ApiError} from "../../errors.js";
 import {ApiModules} from "../../types.js";
 import {
@@ -18,12 +21,11 @@ import {
 export function getBeaconStateApi({
   chain,
   config,
-  db,
-}: Pick<ApiModules, "chain" | "config" | "db">): ServerApi<routes.beacon.state.Api> {
+}: Pick<ApiModules, "chain" | "config">): ServerApi<routes.beacon.state.Api> {
   async function getState(
     stateId: routes.beacon.StateId
   ): Promise<{state: BeaconStateAllForks; executionOptimistic: boolean}> {
-    return resolveStateId(config, chain, db, stateId);
+    return resolveStateId(chain, stateId);
   }
 
   return {
@@ -43,6 +45,25 @@ export function getBeaconStateApi({
       };
     },
 
+    async getStateRandao(stateId, epoch) {
+      const {state, executionOptimistic} = await getState(stateId);
+      const stateEpoch = computeEpochAtSlot(state.slot);
+      const usedEpoch = epoch ?? stateEpoch;
+
+      if (!(stateEpoch < usedEpoch + EPOCHS_PER_HISTORICAL_VECTOR && usedEpoch <= stateEpoch)) {
+        throw new ApiError(400, "Requested epoch is out of range");
+      }
+
+      const randao = getRandaoMix(state, usedEpoch);
+
+      return {
+        executionOptimistic,
+        data: {
+          randao,
+        },
+      };
+    },
+
     async getStateFinalityCheckpoints(stateId) {
       const {state, executionOptimistic} = await getState(stateId);
       return {
@@ -56,7 +77,7 @@ export function getBeaconStateApi({
     },
 
     async getStateValidators(stateId, filters) {
-      const {state, executionOptimistic} = await resolveStateId(config, chain, db, stateId);
+      const {state, executionOptimistic} = await resolveStateId(chain, stateId);
       const currentEpoch = getCurrentEpoch(state);
       const {validators, balances} = state; // Get the validators sub tree once for all the loop
       const {pubkey2index} = chain.getHeadState().epochCtx;
@@ -107,7 +128,7 @@ export function getBeaconStateApi({
     },
 
     async getStateValidator(stateId, validatorId) {
-      const {state, executionOptimistic} = await resolveStateId(config, chain, db, stateId);
+      const {state, executionOptimistic} = await resolveStateId(chain, stateId);
       const {pubkey2index} = chain.getHeadState().epochCtx;
 
       const resp = getStateValidatorIndex(validatorId, state, pubkey2index);
@@ -128,7 +149,7 @@ export function getBeaconStateApi({
     },
 
     async getStateValidatorBalances(stateId, indices) {
-      const {state, executionOptimistic} = await resolveStateId(config, chain, db, stateId);
+      const {state, executionOptimistic} = await resolveStateId(chain, stateId);
 
       if (indices) {
         const headState = chain.getHeadState();
@@ -165,21 +186,24 @@ export function getBeaconStateApi({
     },
 
     async getEpochCommittees(stateId, filters) {
-      const {state, executionOptimistic} = await resolveStateId(config, chain, db, stateId);
+      const {state, executionOptimistic} = await resolveStateId(chain, stateId);
 
       const stateCached = state as CachedBeaconStateAltair;
       if (stateCached.epochCtx === undefined) {
         throw new ApiError(400, `No cached state available for stateId: ${stateId}`);
       }
 
-      const shuffling = stateCached.epochCtx.getShufflingAtEpoch(filters?.epoch ?? computeEpochAtSlot(state.slot));
-      const committes = shuffling.committees;
-      const committesFlat = committes.flatMap((slotCommittees, committeeIndex) => {
-        if (filters?.index !== undefined && filters.index !== committeeIndex) {
+      const epoch = filters?.epoch ?? computeEpochAtSlot(state.slot);
+      const startSlot = computeStartSlotAtEpoch(epoch);
+      const shuffling = stateCached.epochCtx.getShufflingAtEpoch(epoch);
+      const committees = shuffling.committees;
+      const committeesFlat = committees.flatMap((slotCommittees, slotInEpoch) => {
+        const slot = startSlot + slotInEpoch;
+        if (filters?.slot !== undefined && filters.slot !== slot) {
           return [];
         }
-        return slotCommittees.flatMap((committee, slot) => {
-          if (filters?.slot !== undefined && filters.slot !== slot) {
+        return slotCommittees.flatMap((committee, committeeIndex) => {
+          if (filters?.index !== undefined && filters.index !== committeeIndex) {
             return [];
           }
           return [
@@ -194,7 +218,7 @@ export function getBeaconStateApi({
 
       return {
         executionOptimistic,
-        data: committesFlat,
+        data: committeesFlat,
       };
     },
 
@@ -204,7 +228,7 @@ export function getBeaconStateApi({
      */
     async getEpochSyncCommittees(stateId, epoch) {
       // TODO: Should pick a state with the provided epoch too
-      const {state, executionOptimistic} = await resolveStateId(config, chain, db, stateId);
+      const {state, executionOptimistic} = await resolveStateId(chain, stateId);
 
       // TODO: If possible compute the syncCommittees in advance of the fork and expose them here.
       // So the validators can prepare and potentially attest the first block. Not critical tho, it's very unlikely

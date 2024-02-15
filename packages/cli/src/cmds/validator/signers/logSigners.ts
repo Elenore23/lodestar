@@ -1,10 +1,10 @@
 import {Signer, SignerLocal, SignerRemote, SignerType} from "@lodestar/validator";
-import {Logger} from "@lodestar/utils";
+import {LogLevel, Logger, toSafePrintableUrl} from "@lodestar/utils";
 
 /**
  * Log each pubkeys for auditing out keys are loaded from the logs
  */
-export function logSigners(logger: Pick<Logger, "info">, signers: Signer[]): void {
+export function logSigners(logger: Pick<Logger, LogLevel.info>, signers: Signer[]): void {
   const localSigners: SignerLocal[] = [];
   const remoteSigners: SignerRemote[] = [];
 
@@ -27,7 +27,7 @@ export function logSigners(logger: Pick<Logger, "info">, signers: Signer[]): voi
   }
 
   for (const {url, pubkeys} of groupExternalSignersByUrl(remoteSigners)) {
-    logger.info(`External signers on URL: ${url}`);
+    logger.info(`External signers on URL: ${toSafePrintableUrl(url)}`);
     for (const pubkey of pubkeys) {
       logger.info(pubkey);
     }

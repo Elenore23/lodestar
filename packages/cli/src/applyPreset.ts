@@ -1,4 +1,13 @@
 // MUST import this file first before anything and not import any Lodestar code.
+
+// eslint-disable-next-line no-restricted-imports, import/no-extraneous-dependencies
+import {hasher} from "@chainsafe/persistent-merkle-tree/lib/hasher/as-sha256.js";
+// eslint-disable-next-line no-restricted-imports, import/no-extraneous-dependencies
+import {setHasher} from "@chainsafe/persistent-merkle-tree/lib/hasher/index.js";
+
+// without setting this first, persistent-merkle-tree will use noble instead
+setHasher(hasher);
+
 //
 // ## Rationale
 //
@@ -14,7 +23,7 @@
 // set LODESTAR_PRESET manually every time.
 
 // IMPORTANT: only import Lodestar code here which does not import any other Lodestar libraries
-import {setActivePreset, presetFromJson} from "@lodestar/params/setPreset";
+import {setActivePreset, presetFromJson, PresetName} from "@lodestar/params/setPreset";
 import {readFile} from "./util/file.js";
 
 const network = valueOfArg("network");
@@ -35,6 +44,9 @@ else if (process.env.LODESTAR_PRESET) {
 else if (network) {
   if (network === "dev") {
     process.env.LODESTAR_PRESET = "minimal";
+    // "c-kzg" has hardcoded the mainnet value, do not use presets
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    setActivePreset(PresetName.minimal, {FIELD_ELEMENTS_PER_BLOB: 4096});
   } else if (network === "gnosis" || network === "chiado") {
     process.env.LODESTAR_PRESET = "gnosis";
   }
@@ -44,6 +56,9 @@ else if (network) {
 else if (process.argv[2] === "dev") {
   process.env.LODESTAR_PRESET = "minimal";
   process.env.LODESTAR_NETWORK = "dev";
+  // "c-kzg" has hardcoded the mainnet value, do not use presets
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  setActivePreset(PresetName.minimal, {FIELD_ELEMENTS_PER_BLOB: 4096});
 }
 
 if (presetFile) {

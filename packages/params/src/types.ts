@@ -79,7 +79,9 @@ export type BeaconPreset = {
   // DENEB
   ///////////
   FIELD_ELEMENTS_PER_BLOB: number;
+  MAX_BLOB_COMMITMENTS_PER_BLOCK: number;
   MAX_BLOBS_PER_BLOCK: number;
+  KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: number;
 };
 
 /**
@@ -162,7 +164,9 @@ export const beaconPresetTypes: BeaconPresetTypes = {
   // DENEB
   ///////////
   FIELD_ELEMENTS_PER_BLOB: "number",
+  MAX_BLOB_COMMITMENTS_PER_BLOCK: "number",
   MAX_BLOBS_PER_BLOCK: "number",
+  KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: "number",
 };
 
 type BeaconPresetTypes = {

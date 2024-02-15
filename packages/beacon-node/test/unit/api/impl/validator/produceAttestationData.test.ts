@@ -1,57 +1,35 @@
-import sinon, {SinonStubbedInstance} from "sinon";
-import chaiAsPromised from "chai-as-promised";
-import {use, expect} from "chai";
-import {config} from "@lodestar/config/default";
+import {describe, it, expect, beforeEach, vi} from "vitest";
 import {ProtoBlock} from "@lodestar/fork-choice";
-import {IBeaconSync, SyncState} from "../../../../../src/sync/interface.js";
-import {ApiModules} from "../../../../../src/api/impl/types.js";
+import {SyncState} from "../../../../../src/sync/interface.js";
+import {ApiTestModules, getApiTestModules} from "../../../../utils/api.js";
 import {getValidatorApi} from "../../../../../src/api/impl/validator/index.js";
-import {LocalClock} from "../../../../../src/chain/clock/index.js";
-import {testLogger} from "../../../../utils/logger.js";
-import {ApiImplTestModules, setupApiImplTestServer} from "../index.test.js";
-
-use(chaiAsPromised);
 
 describe("api - validator - produceAttestationData", function () {
-  const logger = testLogger();
-  let syncStub: SinonStubbedInstance<IBeaconSync>;
-  let modules: ApiModules;
-  let server: ApiImplTestModules;
+  let modules: ApiTestModules;
+  let api: ReturnType<typeof getValidatorApi>;
 
   beforeEach(function () {
-    server = setupApiImplTestServer();
-    syncStub = server.syncStub;
-    modules = {
-      chain: server.chainStub,
-      config,
-      db: server.dbStub,
-      logger,
-      network: server.networkStub,
-      sync: syncStub,
-      metrics: null,
-    };
+    modules = getApiTestModules();
+    api = getValidatorApi(modules);
   });
 
   it("Should throw when node is not synced", async function () {
     // Set the node's state to way back from current slot
     const currentSlot = 100000;
     const headSlot = 0;
-    server.chainStub.clock = {currentSlot} as LocalClock;
-    sinon.replaceGetter(syncStub, "state", () => SyncState.SyncingFinalized);
-    server.forkChoiceStub.getHead.returns({slot: headSlot} as ProtoBlock);
+    vi.spyOn(modules.chain.clock, "currentSlot", "get").mockReturnValue(currentSlot);
+    vi.spyOn(modules.sync, "state", "get").mockReturnValue(SyncState.SyncingFinalized);
+    modules.forkChoice.getHead.mockReturnValue({slot: headSlot} as ProtoBlock);
 
-    // Should not allow any call to validator API
-    const api = getValidatorApi(modules);
-    await expect(api.produceAttestationData(0, 0)).to.be.rejectedWith("Node is syncing");
+    await expect(api.produceAttestationData(0, 0)).rejects.toThrow("Node is syncing");
   });
 
   it("Should throw error when node is stopped", async function () {
     const currentSlot = 100000;
-    server.chainStub.clock = {currentSlot} as LocalClock;
-    sinon.replaceGetter(syncStub, "state", () => SyncState.Stalled);
+    vi.spyOn(modules.chain.clock, "currentSlot", "get").mockReturnValue(currentSlot);
+    vi.spyOn(modules.sync, "state", "get").mockReturnValue(SyncState.Stalled);
 
     // Should not allow any call to validator API
-    const api = getValidatorApi(modules);
-    await expect(api.produceAttestationData(0, 0)).to.be.rejectedWith("Node is syncing - waiting for peers");
+    await expect(api.produceAttestationData(0, 0)).rejects.toThrow("Node is syncing - waiting for peers");
   });
 });

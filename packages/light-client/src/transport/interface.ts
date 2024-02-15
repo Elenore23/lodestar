@@ -5,12 +5,7 @@ export interface LightClientTransport {
   getUpdates(
     startPeriod: SyncPeriod,
     count: number
-  ): Promise<
-    {
-      version: ForkName;
-      data: allForks.LightClientUpdate;
-    }[]
-  >;
+  ): Promise<{version: ForkName; data: allForks.LightClientUpdate[]}>;
   /**
    * Returns the latest optimistic head update available. Clients should use the SSE type `light_client_optimistic_update`
    * unless to get the very first head update after syncing, or if SSE are not supported by the server.

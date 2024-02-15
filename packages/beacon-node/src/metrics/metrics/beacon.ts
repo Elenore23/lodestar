@@ -1,4 +1,6 @@
+import {ProducedBlockSource} from "@lodestar/types";
 import {RegistryMetricCreator} from "../utils/registryMetricCreator.js";
+import {BlockProductionStep, PayloadPreparationType} from "../../chain/produceBlock/index.js";
 
 export type BeaconMetrics = ReturnType<typeof createBeaconMetrics>;
 
@@ -13,10 +15,6 @@ export function createBeaconMetrics(register: RegistryMetricCreator) {
     // From https://github.com/ethereum/beacon-metrics/blob/master/metrics.md
     // Interop-metrics
 
-    peers: register.gauge({
-      name: "libp2p_peers",
-      help: "number of connected peers",
-    }),
     headSlot: register.gauge({
       name: "beacon_head_slot",
       help: "slot of the head block of the beacon chain",
@@ -50,7 +48,7 @@ export function createBeaconMetrics(register: RegistryMetricCreator) {
     // Additional Metrics
     // TODO: Implement
 
-    currentValidators: register.gauge<"status">({
+    currentValidators: register.gauge<{status: string}>({
       name: "beacon_current_validators",
       labelNames: ["status"],
       help: "number of validators in current epoch",
@@ -87,6 +85,30 @@ export function createBeaconMetrics(register: RegistryMetricCreator) {
         // Add buckets up to 100 to capture high depth re-orgs. Above 100 things are going really bad.
         buckets: [1, 2, 3, 5, 7, 10, 20, 30, 50, 100],
       }),
+      votes: register.gauge({
+        name: "beacon_fork_choice_votes_count",
+        help: "Current count of votes in fork choice data structures",
+      }),
+      queuedAttestations: register.gauge({
+        name: "beacon_fork_choice_queued_attestations_count",
+        help: "Current count of queued_attestations in fork choice data structures",
+      }),
+      validatedAttestationDatas: register.gauge({
+        name: "beacon_fork_choice_validated_attestation_datas_count",
+        help: "Current count of validatedAttestationDatas in fork choice data structures",
+      }),
+      balancesLength: register.gauge({
+        name: "beacon_fork_choice_balances_length",
+        help: "Current length of balances in fork choice data structures",
+      }),
+      nodes: register.gauge({
+        name: "beacon_fork_choice_nodes_count",
+        help: "Current count of nodes in fork choice data structures",
+      }),
+      indices: register.gauge({
+        name: "beacon_fork_choice_indices_count",
+        help: "Current count of indices in fork choice data structures",
+      }),
     },
 
     parentBlockDistance: register.histogram({
@@ -95,49 +117,68 @@ export function createBeaconMetrics(register: RegistryMetricCreator) {
       buckets: [1, 2, 3, 5, 7, 10, 20, 30, 50, 100],
     }),
 
-    reqResp: {
-      rateLimitErrors: register.gauge<"method">({
-        name: "beacon_reqresp_rate_limiter_errors_total",
-        help: "Count rate limiter errors",
-        labelNames: ["method"],
-      }),
-    },
-
-    blockProductionTime: register.histogram<"source">({
+    blockProductionTime: register.histogram<{source: ProducedBlockSource}>({
       name: "beacon_block_production_seconds",
       help: "Full runtime of block production",
       buckets: [0.1, 1, 2, 4, 10],
       labelNames: ["source"],
     }),
-    blockProductionRequests: register.gauge<"source">({
+    executionBlockProductionTimeSteps: register.histogram<{step: BlockProductionStep}>({
+      name: "beacon_block_production_execution_steps_seconds",
+      help: "Detailed steps runtime of execution block production",
+      buckets: [0.01, 0.1, 0.2, 0.5, 1],
+      labelNames: ["step"],
+    }),
+    builderBlockProductionTimeSteps: register.histogram<{step: BlockProductionStep}>({
+      name: "beacon_block_production_builder_steps_seconds",
+      help: "Detailed steps runtime of builder block production",
+      buckets: [0.01, 0.1, 0.2, 0.5, 1],
+      labelNames: ["step"],
+    }),
+    blockProductionRequests: register.gauge<{source: ProducedBlockSource}>({
       name: "beacon_block_production_requests_total",
       help: "Count of all block production requests",
       labelNames: ["source"],
     }),
-    blockProductionSuccess: register.gauge<"source">({
+    blockProductionSuccess: register.gauge<{source: ProducedBlockSource}>({
       name: "beacon_block_production_successes_total",
       help: "Count of blocks successfully produced",
       labelNames: ["source"],
     }),
-    blockProductionNumAggregated: register.histogram<"source">({
+    blockProductionNumAggregated: register.histogram<{source: ProducedBlockSource}>({
       name: "beacon_block_production_num_aggregated_total",
       help: "Count of all aggregated attestations in our produced block",
       buckets: [32, 64, 96, 128],
       labelNames: ["source"],
     }),
 
+    blockProductionCaches: {
+      producedBlockRoot: register.gauge({
+        name: "beacon_blockroot_produced_cache_total",
+        help: "Count of cached produced block roots",
+      }),
+      producedBlindedBlockRoot: register.gauge({
+        name: "beacon_blinded_blockroot_produced_cache_total",
+        help: "Count of cached produced blinded block roots",
+      }),
+      producedContentsCache: register.gauge({
+        name: "beacon_contents_produced_cache_total",
+        help: "Count of cached produced blob contents",
+      }),
+    },
+
     blockPayload: {
       payloadAdvancePrepTime: register.histogram({
         name: "beacon_block_payload_prepare_time",
-        help: "Time for perparing payload in advance",
+        help: "Time for preparing payload in advance",
         buckets: [0.1, 1, 3, 5, 10],
       }),
-      payloadFetchedTime: register.histogram<"prepType">({
+      payloadFetchedTime: register.histogram<{prepType: PayloadPreparationType}>({
         name: "beacon_block_payload_fetched_time",
         help: "Time to fetch the payload from EL",
         labelNames: ["prepType"],
       }),
-      emptyPayloads: register.gauge<"prepType">({
+      emptyPayloads: register.gauge<{prepType: PayloadPreparationType}>({
         name: "beacon_block_payload_empty_total",
         help: "Count of payload with empty transactions",
         labelNames: ["prepType"],

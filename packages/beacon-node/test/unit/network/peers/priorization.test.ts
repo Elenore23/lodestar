@@ -1,7 +1,7 @@
-import {expect} from "chai";
-import {PeerId} from "@libp2p/interface-peer-id";
+import {PeerId} from "@libp2p/interface";
 import {createSecp256k1PeerId} from "@libp2p/peer-id-factory";
 import {BitArray} from "@chainsafe/ssz";
+import {describe, it, expect} from "vitest";
 import {ATTESTATION_SUBNET_COUNT} from "@lodestar/params";
 import {
   ExcessPeerDisconnectReason,
@@ -14,6 +14,7 @@ import {RequestedSubnet} from "../../../../src/network/peers/utils/index.js";
 
 type Result = ReturnType<typeof prioritizePeers>;
 
+// eslint-disable-next-line vitest/valid-describe-callback
 describe("network / peers / priorization", async () => {
   const peers: PeerId[] = [];
   for (let i = 0; i < 8; i++) {
@@ -237,7 +238,7 @@ describe("network / peers / priorization", async () => {
   for (const {id, connectedPeers, activeAttnets, activeSyncnets, opts, expectedResult} of testCases) {
     it(id, () => {
       const result = prioritizePeers(connectedPeers, toReqSubnet(activeAttnets), toReqSubnet(activeSyncnets), opts);
-      expect(cleanResult(result)).to.deep.equal(cleanResult(expectedResult));
+      expect(cleanResult(result)).toEqual(cleanResult(expectedResult));
     });
   }
 
@@ -263,6 +264,7 @@ describe("network / peers / priorization", async () => {
   }
 });
 
+// eslint-disable-next-line vitest/valid-describe-callback
 describe("sortPeersToPrune", async function () {
   const peers: PeerId[] = [];
   for (let i = 0; i < 8; i++) {
@@ -291,7 +293,7 @@ describe("sortPeersToPrune", async function () {
       [connectedPeers[3], 0],
     ]);
 
-    expect(sortPeersToPrune(connectedPeers, dutiesByPeer).map((p) => p.id.toString())).to.be.deep.equals([
+    expect(sortPeersToPrune(connectedPeers, dutiesByPeer).map((p) => p.id.toString())).toEqual([
       // peer-0 is the worse and has the most chance to prune
       "peer-0",
       // peer-1 is better than peer-0 in terms of score

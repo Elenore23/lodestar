@@ -5,7 +5,14 @@ Thanks for your interest in contributing to Lodestar. It's people like you that 
 ## Prerequisites
 
 - :gear: [NodeJS](https://nodejs.org/) (LTS)
-- :toolbox: [Yarn](https://yarnpkg.com/)/[Lerna](https://lerna.js.org/)
+- :toolbox: [Yarn](https://yarnpkg.com/)
+
+### MacOS Specifics
+
+When using MacOS, there are a couple of extra prerequisites that are required.
+
+- python
+- coreutils (e.g. via `brew install coreutils`)
 
 ## Getting Started
 
@@ -16,51 +23,70 @@ Thanks for your interest in contributing to Lodestar. It's people like you that 
 
 ## Tests
 
-- :test_tube: Run `lerna run test:unit` for unit tests.
-- :test_tube: Run `lerna run test:e2e` for end-to-end tests.
-- :test_tube: Run `lerna run test:spec` for spec tests.
-- :test_tube: Run `lerna run test` to run all tests.
+To run tests:
+
+- :test_tube: Run `yarn test:unit` for unit tests.
+- :test_tube: Run `yarn test:e2e` for end-to-end tests.
+- :test_tube: Run `yarn test:spec` for spec tests.
+- :test_tube: Run `yarn test` to run all tests.
 - :test_tube: Run `yarn check-types` to check TypeScript types.
 - :test_tube: Run `yarn lint` to run the linter (ESLint).
+
+Contributing to tests:
+
+- Test must not depend on external live resources, such that running tests for a commit must be deterministic:
+  - Do not pull data from external APIs like execution JSON RPC (instead run a local node).
+  - Do not pull unpinned versions from DockerHub (use deterministic tag) or Github (checkout commit not branch).
+  - Carefully design tests that depend on timing sensitive events like p2p network e2e tests. Consider that Github runners are significantly less powerful than your development environment.
+
+### Common Issues
+
+**Error: [vitest] Cannot mock "../../src/db/repositories/index.js" because it is already loaded by "src/db/beacon.ts"**
+
+If you observe any error in tests with matching to above error message, that implies you are loading the mocks in the wrong order. The correct order is to import the mocks first and then the actual module. We suggest to import the mocks on very top before any local modules. 
+
+**✖ Error: Cannot find package 'async_hooks' imported from**
+
+If you observe following error running any of the test files that means you are running a file which itself or any dependency of that file imports `vitest`, but you are not running that file with `vitest` runner. Try running it with `yarn vitest` command, not with `node` command.
 
 ### Debugging Spec Tests
 
 - To fix errors always focus on passing all minimal tests first without running mainnet tests.
-- Spec tests often compare full expected vs actual states in JSON format. To better understand the diff it's convenient to use mocha's option `--inline-diffs`.
-- A single logical error can cause many spec tests to fail. To focus on a single test at a time you can use mocha's option `--bail` to stop at the first failed test
-- To then run only that failed test you can run against a specific file as use mocha's option `--grep` to run only one case
+- Spec tests often compare full expected vs actual states in JSON format.
+- A single logical error can cause many spec tests to fail. To focus on a single test at a time you can use vitest's option `--bail` to stop at the first failed test
+- To then run only that failed test you can run against a specific file as use vitest's filters to run only one case
 
-```
-LODESTAR_PRESET=minimal ../../node_modules/.bin/mocha --config .mocharc.spec.yml test/spec/phase0/sanity.test.ts --inline-diffs --bail --grep "attestation"
+```sh
+LODESTAR_PRESET=minimal yarn vitest --run --config vitest.config.spec.ts test/spec/phase0/sanity.test.ts
 ```
 
 ## Docker
 
 The docker-compose file requires that a `.env` file be present in this directory. The `default.env` file provides a template and can be copied `.env`:
 
-```
+```sh
 cp default.env .env
 ```
 
-###### Beacon node only:
+###### Beacon node only
 
-```
+```sh
 docker-compose up -d
 ```
 
-###### Beacon node and validator:
+###### Beacon node and validator
 
-First, you must have keystores and their secrets available locally at `./keystores` and your password.txt in `./secrets`
+First, you must have keystores and their secrets available locally at `./keystores` and your `password.txt` in `./secrets`
 
-```
+```sh
 docker-compose -f docker-compose.yml -f docker-compose.validator.yml up -d
 ```
 
-###### Dockerized metrics + local beacon node:
+###### Dockerized metrics + local beacon node
 
 Run a local beacon with `--metrics` enabled. Then start Prometheus + Grafana with all dashboards in `./dashboards` automatically loaded running:
 
-```
+```sh
 ./docker/docker-compose.local_dev.sh
 ```
 
@@ -69,7 +95,7 @@ Run a local beacon with `--metrics` enabled. Then start Prometheus + Grafana wit
 Unsure where to begin contributing to Lodestar? Here are some ideas!
 
 - :pencil2: See any typos? See any verbiage that should be changed or updated? Go for it! Github makes it easy to make contributions right from the browser.
-- :mag_right: Look through our [outstanding unassigned issues](https://github.com/ChainSafe/lodestar/issues?q=is%3Aopen+is%3Aissue+no%3Aassignee). (Hint: look for issues labeled `meta-good-first-issue` or `meta-help-wanted`!)
+- :mag_right: Look through our [outstanding unassigned issues](https://github.com/ChainSafe/lodestar/issues?q=is%3Aopen+is%3Aissue+no%3Aassignee). (Hint: look for issues labeled `good first issue` or `help-wanted`!)
 - :speech_balloon: Join our [Discord chat](https://discord.gg/aMxzVcr)!
   [![Discord](https://img.shields.io/discord/593655374469660673.svg?label=Discord&logo=discord)](https://discord.gg/aMxzVcr)
 
@@ -90,7 +116,7 @@ Unsure where to begin contributing to Lodestar? Here are some ideas!
 
 **Branch Naming**
 
-If you are contributing from this repo prefix the branch name with your Github username (i.e. `myusername/short-description`)
+If you are contributing from this repository prefix the branch name with your Github username (i.e. `myusername/short-description`)
 
 **Pull Request Naming**
 
@@ -116,7 +142,7 @@ For example:
 
 ## Lodestar Monorepo
 
-We're currently experimenting with hosting the majority of lodestar packages and support packages in this repository as a [monorepo](https://en.wikipedia.org/wiki/Monorepo). We're using [Lerna](https://lerna.js.org/) to manage the packages. See [packages/](https://github.com/ChainSafe/lodestar/tree/unstable/packages) for a list of packages hosted in this repo.
+We're currently experimenting with hosting the majority of lodestar packages and support packages in this repository as a [monorepo](https://en.wikipedia.org/wiki/Monorepo). We're using [Lerna](https://lerna.js.org/) to manage the packages. See [packages/](https://github.com/ChainSafe/lodestar/tree/unstable/packages) for a list of packages hosted in this repository.
 
 ## Style Guide
 
@@ -132,7 +158,7 @@ We're currently experimenting with hosting the majority of lodestar packages and
     - Functions and variables should be [`camelCase`](https://en.wikipedia.org/wiki/Camel_case), classes should be [`PascalCase`](http://wiki.c2.com/?PascalCase), constants should be `UPPERCASE_WITH_UNDERSCORES`.
     - Use `"` instead of `'`
     - All functions should have types declared for all parameters and return value
-    - You shouldn't be using TypeScript's `any`
+    - You shouldn't be using TypeScript type `any`
     - Private class properties should not be prefixed with a `_`
       - e.g.: `private dirty;`, not `private _dirty;`
 - Make sure that your code is properly type checked:
@@ -142,9 +168,30 @@ We're currently experimenting with hosting the majority of lodestar packages and
   - run `yarn test:unit` from the command line
 - Commenting: If your code does something that is not obvious or deviates from standards, leave a comment for other developers to explain your logic and reasoning.
   - Use `//` commenting format unless it's a comment you want people to see in their IDE.
-  - Use `/** **/` commenting format for documenting a function/variable.
-- Code whitespace can be helpful for reading complex code, please add some.
+  - Use `/** */` commenting format for documenting a function/variable.
+- Code white space can be helpful for reading complex code, please add some.
 - For unit tests, we forbid import stubbing when other approaches are feasible.
+- Metrics are a [critical part of Lodestar](https://www.youtube.com/watch?v=49_qQDbLjGU), every large feature should be documented with metrics
+  - Metrics need to follow the [Prometheus Best Practices](https://prometheus.io/docs/practices/naming/)
+  - For metric names, make sure to add the unit as suffix, e.g. `_seconds` or `_bytes`
+  - Metric code variables on the other hand should not be suffixed, i.e. `Sec`-suffix should be omitted
+  - Time-based metrics must use seconds as the unit
+
+## Tests style guide
+
+Test must not depend on external live resources, such that running tests for a commit must be deterministic:
+
+- Do not pull data from external APIs like execution JSON RPC (instead run a local node).
+- Do not pull unpinned versions from dockerhub (use deterministic tag) or Github (checkout commit not branch).
+- Carefully design tests that depend on timing sensitive events like p2p network e2e tests. Consider that Github runners are significantly less powerful than your development environment.
+
+Add assertion messages where possible to ease fixing tests if they fail. If an assertion message is called from multiple times with the same stack trace, you **MUST** include an assertion message. For example, if an assertion is inside a for loop add some metadata to be able to locate the error source:
+
+```ts
+for (const blockResult of blocksResult) {
+  expect(blockResult.status).equals("processed", `wrong block ${blockResult.id} result status`);
+}
+```
 
 ## Logging policy
 
@@ -169,19 +216,49 @@ Contributors must choose the log level carefully to ensure a consistent experien
 
 To edit or extend an existing Grafana dashboard with minimal diff:
 
-1. Grab the .json dashboard file from current unstable
-2. Import file to Grafana via the web UI at `/dashboard/import`. Give it some temporal name relevant to your work (i.e. the branch name)
-3. Do edits on the Dashboard
-4. Once done make sure to leave the exact same visual aspect as before: same refresh interval, collapsed rows, etc.
-5. Click the "share dashboard" icon next to the title at the top left corner. Go to the "Export" tab, set "Export for sharing externally" to true and click "Save to file"
-6. Paste the contents of the downloaded file in the Github repo, commit and open your PR
+1. Grab the `.json` dashboard file from current unstable
+2. Import the file to Grafana via the web UI at `/dashboard/import` without modifying the UID of the dashboard
+3. Visually edit the dashboard
+4. Once done make sure to leave the exact same visual aspect as before: same refresh interval, time range, etc.
+5. Save the dashboard (CTRL+S)
+6. Run download script, see [below](#using-download-script) on how to use it
+7. Check git diff of updated dashboards, commit, push and open your PR
+
+### Using Download Script
+
+Create a file `.secrets.env` with envs
+
+```sh
+GRAFANA_API_KEY=$token
+GRAFANA_URL=https://yourgrafanaapi.io
+```
+
+Run script to download dashboards to `./dashboards` folder
+
+```sh
+node scripts/download_dashboards.mjs
+```
+
+## Contributing to Documentation
+
+When submitting PRs for documentation updates, build and run the documentation locally to ensure functionality before submission. For first time documentation contributors, install the python dependencies with `yarn docs:install`. Build the documentation locally with `yarn docs:build` and serve with `yarn docs:serve`
+
+Your locally served documentation will then be accessible at http://localhost:8000.
+
+If you run into build issues due to circular dependencies, branch switching or other incompatibilities, try cleaning your modules and rebuild your dependencies with:
+
+```sh
+yarn clean && yarn clean:nm && yarn && yarn build
+```
+
+We also use a spelling [word list](https://github.com/ChainSafe/lodestar/blob/unstable/.wordlist.txt) as part of our documentation checks. If using unrecognized words or abbreviations, please extend the word list to pass checks. Make sure the list is sorted with `./scripts/wordlist_sort.sh` and checked with `./scripts/wordlist_sort_check.sh` for sorting and duplicates.
 
 ## Label Guide
 
 Issues and pull requests are subject to the following labeling guidelines.
 
 - PRs may have a status label to indicate deviation from the normal process such as `status-blocked` or `status-do-not-merge`
-- Issues and PRs will be tagged with a `scope` and `prio` to indicate type and priority for triaging.
+- Issues and PRs will be tagged with a `scope` and `prio` to indicate type and priority for triage.
 - All other labels allow for further evaluation and organization.
 
 Label descriptions can be found below.
@@ -190,54 +267,17 @@ Label descriptions can be found below.
 
 Status labels apply to issues and pull requests which deviate from normal processes.
 
-- `status-blocked`: This is blocked by another issue that requires resolving first.
-- `status-do-not-merge`: Merging this issue will break the build. Do not merge!
-
 ###### `scope.*` Scope Indicator
 
 Scope is comparable to Module labels but less strict with the definition of components. It applies to both, issues and pull requests.
-
-- `scope-cpu-performance`: Performance issue and ideas to improve performance.
-- `scope-documentation`: All issues related to the Lodestar documentation.
-- `scope-interop`: Issues that fix interop issues between Lodestar and CL, EL or tooling.
-- `scope-light-clients`: All issues regarding light client development.
-- `scope-logging`: Issue about logs: hygiene, format issues, improvements.
-- `scope-memory`: Issues to reduce and improve memory usage.
-- `scope-metrics`: All issues with regards to the exposed metrics.
-- `scope-networking`: All issues related to networking, gossip, and libp2p.
-- `scope-profitability`: Issues to directly improve validator performance and its profitability.
-- `scope-security`: Issues that fix security issues: DOS, key leak, CVEs.
-- `scope-testing`: Issues for adding test coverage, fixing existing tests or testing strategies
-- `scope-testnet-debugging`: Issues uncovered through running a node on a public testnet.
-- `scope-ux`: Issues for CLI UX or general consumer UX.
 
 ###### `prio.*` Prioritization Indicator
 
 A simple indicator of issue prioritization. It mainly applies to issues.
 
-- `prio0-critical`: Drop everything to resolve this immediately.
-- `prio1-high`: Resolve issues as soon as possible.
-- `prio2-medium`: Resolve this some time soon (tm).
-- `prio3-low`: This is nice to have.
-
 ###### `spec.*` Ethereum Consensus Spec Version Target
 
 Issues that target a specific version of the Ethereum consensus spec, shall be tagged accordingly.
-
-- `spec-phase0`: Issues targeting the initial Ethereum consensus spec version.
-- `spec-altair`: Issues targeting the Altair Ethereum consensus spec version.
-- `spec-bellatrix`: Issues targeting the Bellatrix Ethereum consensus spec version.
-
-###### `meta.*` Meta Labels to organize Miscellaneous Issues
-
-- `meta-breaking-change`: Introduces breaking changes to DB, Validator, Beacon Node, or CLI interfaces. Handle with care!
-- `meta-dependencies`: Pull requests that update a dependency.
-- `meta-discussion`: Indicates a topic that requires input from various developers.
-- `meta-good-first-issue`: Good first issues for newcomers and first-time contributors.
-- `meta-help-wanted`: The author indicates that additional help is wanted.
-- `meta-pm`: Issues relating to Project Management tasks.
-- `meta-stale`: Label for stale issues applied by the stale bot.
-- `meta-technicaldebt`: Issues introducing or resolving technical debts.
 
 ## Community
 

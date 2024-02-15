@@ -1,18 +1,18 @@
 import {toHexString} from "@chainsafe/ssz";
+import {describe, it} from "vitest";
 import {SLOTS_PER_EPOCH} from "@lodestar/params";
 import {phase0, ssz} from "@lodestar/types";
-import {processSlots} from "@lodestar/state-transition";
+// eslint-disable-next-line import/no-relative-packages
+import {generateTestCachedBeaconStateOnlyValidators} from "../../../../../state-transition/test/perf/util.js";
 import {IBeaconChain} from "../../../../src/chain/index.js";
 import {AttestationErrorCode} from "../../../../src/chain/errors/index.js";
-import {validateGossipAggregateAndProof} from "../../../../src/chain/validation/index.js";
+import {validateApiAggregateAndProof, validateGossipAggregateAndProof} from "../../../../src/chain/validation/index.js";
 import {expectRejectedWithLodestarError} from "../../../utils/errors.js";
-import {generateTestCachedBeaconStateOnlyValidators} from "../../../../../state-transition/test/perf/util.js";
 import {memoOnce} from "../../../utils/cache.js";
 import {
   getAggregateAndProofValidData,
   AggregateAndProofValidDataOpts,
 } from "../../../utils/validationData/aggregateAndProof.js";
-import {IStateRegenerator} from "../../../../src/chain/regen/interface.js";
 
 describe("chain / validation / aggregateAndProof", () => {
   const vc = 64;
@@ -41,7 +41,8 @@ describe("chain / validation / aggregateAndProof", () => {
   it("Valid", async () => {
     const {chain, signedAggregateAndProof} = getValidData({});
 
-    await validateGossipAggregateAndProof(chain, signedAggregateAndProof);
+    const fork = chain.config.getForkName(stateSlot);
+    await validateApiAggregateAndProof(fork, chain, signedAggregateAndProof);
   });
 
   it("BAD_TARGET_EPOCH", async () => {
@@ -109,22 +110,6 @@ describe("chain / validation / aggregateAndProof", () => {
     await expectError(chain, signedAggregateAndProof, AttestationErrorCode.INVALID_TARGET_ROOT);
   });
 
-  it("NO_COMMITTEE_FOR_SLOT_AND_INDEX", async () => {
-    const {chain, signedAggregateAndProof} = getValidData();
-    // slot is out of the commitee range
-    // simulate https://github.com/ChainSafe/lodestar/issues/4396
-    // this way we cannot get committeeIndices
-    const committeeState = processSlots(
-      getState(),
-      signedAggregateAndProof.message.aggregate.data.slot + 2 * SLOTS_PER_EPOCH
-    );
-    (chain as {regen: IStateRegenerator}).regen = {
-      getState: async () => committeeState,
-    } as Partial<IStateRegenerator> as IStateRegenerator;
-
-    await expectError(chain, signedAggregateAndProof, AttestationErrorCode.NO_COMMITTEE_FOR_SLOT_AND_INDEX);
-  });
-
   it("EMPTY_AGGREGATION_BITFIELD", async () => {
     const {chain, signedAggregateAndProof} = getValidData();
     // Unset all aggregationBits
@@ -187,6 +172,11 @@ describe("chain / validation / aggregateAndProof", () => {
     signedAggregateAndProof: phase0.SignedAggregateAndProof,
     errorCode: AttestationErrorCode
   ): Promise<void> {
-    await expectRejectedWithLodestarError(validateGossipAggregateAndProof(chain, signedAggregateAndProof), errorCode);
+    const fork = chain.config.getForkName(stateSlot);
+    const serializedData = ssz.phase0.SignedAggregateAndProof.serialize(signedAggregateAndProof);
+    await expectRejectedWithLodestarError(
+      validateGossipAggregateAndProof(fork, chain, signedAggregateAndProof, serializedData),
+      errorCode
+    );
   }
 });

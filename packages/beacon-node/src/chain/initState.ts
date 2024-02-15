@@ -1,3 +1,4 @@
+import {toHexString} from "@chainsafe/ssz";
 import {
   blockToHeader,
   computeEpochAtSlot,
@@ -9,7 +10,6 @@ import {
 import {phase0, allForks, ssz} from "@lodestar/types";
 import {ChainForkConfig} from "@lodestar/config";
 import {Logger, toHex} from "@lodestar/utils";
-import {toHexString} from "@chainsafe/ssz";
 import {GENESIS_SLOT, ZERO_HASH} from "../constants/index.js";
 import {IBeaconDb} from "../db/index.js";
 import {Eth1Provider} from "../eth1/index.js";
@@ -87,7 +87,7 @@ export async function initStateFromEth1({
 
   const builder = new GenesisBuilder({
     config,
-    eth1Provider: new Eth1Provider(config, opts, signal),
+    eth1Provider: new Eth1Provider(config, {...opts, logger}, signal),
     logger,
     signal,
     pendingStatus:

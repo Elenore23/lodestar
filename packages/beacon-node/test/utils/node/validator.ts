@@ -1,8 +1,8 @@
 import tmp from "tmp";
+import type {SecretKey} from "@chainsafe/bls/types";
 import {LevelDbController} from "@lodestar/db";
 import {interopSecretKey} from "@lodestar/state-transition";
 import {SlashingProtection, Validator, Signer, SignerType, ValidatorProposerConfig} from "@lodestar/validator";
-import type {SecretKey} from "@chainsafe/bls/types";
 import {ServerApi, Api, HttpStatusCode, APIServerHandler} from "@lodestar/api";
 import {mapValues} from "@lodestar/utils";
 import {BeaconNode} from "../../../src/index.js";
@@ -10,24 +10,28 @@ import {testLogger, TestLoggerOpts} from "../logger.js";
 
 export async function getAndInitDevValidators({
   node,
+  logPrefix,
   validatorsPerClient = 8,
   validatorClientCount = 1,
   startIndex = 0,
   useRestApi,
   testLoggerOpts,
   externalSignerUrl,
-  doppelgangerProtectionEnabled = false,
+  doppelgangerProtection = false,
   valProposerConfig,
+  useProduceBlockV3,
 }: {
   node: BeaconNode;
+  logPrefix: string;
   validatorsPerClient: number;
   validatorClientCount: number;
   startIndex: number;
   useRestApi?: boolean;
   testLoggerOpts?: TestLoggerOpts;
   externalSignerUrl?: string;
-  doppelgangerProtectionEnabled?: boolean;
+  doppelgangerProtection?: boolean;
   valProposerConfig?: ValidatorProposerConfig;
+  useProduceBlockV3?: boolean;
 }): Promise<{validators: Validator[]; secretKeys: SecretKey[]}> {
   const validators: Promise<Validator>[] = [];
   const secretKeys: SecretKey[] = [];
@@ -36,13 +40,10 @@ export async function getAndInitDevValidators({
   for (let clientIndex = 0; clientIndex < validatorClientCount; clientIndex++) {
     const startIndexVc = startIndex + clientIndex * validatorsPerClient;
     const endIndex = startIndexVc + validatorsPerClient - 1;
-    const logger = testLogger(`Vali ${startIndexVc}-${endIndex}`, testLoggerOpts);
+    const logger = testLogger(`${logPrefix}-VAL-${startIndexVc}-${endIndex}`, testLoggerOpts);
     const tmpDir = tmp.dirSync({unsafeCleanup: true});
-    const dbOps = {
-      config: node.config,
-      controller: new LevelDbController({name: tmpDir.name}, {logger}),
-    };
-    const slashingProtection = new SlashingProtection(dbOps);
+    const db = await LevelDbController.create({name: tmpDir.name}, {logger});
+    const slashingProtection = new SlashingProtection(db);
 
     const secretKeysValidator = Array.from({length: validatorsPerClient}, (_, i) => interopSecretKey(i + startIndexVc));
     secretKeys.push(...secretKeysValidator);
@@ -64,7 +65,8 @@ export async function getAndInitDevValidators({
 
     validators.push(
       Validator.initializeFromBeaconNode({
-        dbOps,
+        db,
+        config: node.config,
         api: useRestApi ? getNodeApiUrl(node) : getApiFromServerHandlers(node.api),
         slashingProtection,
         logger,
@@ -72,8 +74,9 @@ export async function getAndInitDevValidators({
         processShutdownCallback: () => {},
         abortController,
         signers,
-        doppelgangerProtectionEnabled,
+        doppelgangerProtection,
         valProposerConfig,
+        useProduceBlockV3,
       })
     );
   }
@@ -86,8 +89,8 @@ export async function getAndInitDevValidators({
 }
 
 export function getApiFromServerHandlers(api: {[K in keyof Api]: ServerApi<Api[K]>}): Api {
-  return mapValues(api, (module) =>
-    mapValues(module, (api: APIServerHandler) => {
+  return mapValues(api, (apiModule) =>
+    mapValues(apiModule, (api: APIServerHandler) => {
       return async (...args: any) => {
         let code: HttpStatusCode = HttpStatusCode.OK;
         try {
@@ -110,7 +113,7 @@ export function getApiFromServerHandlers(api: {[K in keyof Api]: ServerApi<Api[K
             error: {
               code: code ?? HttpStatusCode.INTERNAL_SERVER_ERROR,
               message: (err as Error).message,
-              operationId: `${module}.${api.name}`,
+              operationId: api.name,
             },
           };
         }

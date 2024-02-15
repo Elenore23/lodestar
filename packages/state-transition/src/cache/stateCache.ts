@@ -1,5 +1,8 @@
+import bls from "@chainsafe/bls";
+import {CoordType} from "@chainsafe/bls/types";
 import {BeaconConfig} from "@lodestar/config";
-import {EpochContext, EpochContextImmutableData, EpochContextOpts} from "./epochContext.js";
+import {loadState} from "../util/loadState/loadState.js";
+import {EpochCache, EpochCacheImmutableData, EpochCacheOpts} from "./epochCache.js";
 import {
   BeaconStateAllForks,
   BeaconStateExecutions,
@@ -9,14 +12,16 @@ import {
   BeaconStateCapella,
   BeaconStateDeneb,
 } from "./types.js";
+import {RewardCache, createEmptyRewardCache} from "./rewardCache.js";
 
 export type BeaconStateCache = {
   config: BeaconConfig;
-  epochCtx: EpochContext;
+  epochCtx: EpochCache;
   /** Count of clones created from this BeaconStateCache instance. readonly to prevent accidental usage downstream */
   readonly clonedCount: number;
   readonly clonedCountWithTransferCache: number;
   readonly createdWithTransferCache: boolean;
+  proposerRewards: RewardCache;
 };
 
 type Mutable<T> = {
@@ -130,20 +135,63 @@ export type CachedBeaconStateDeneb = CachedBeaconState<BeaconStateDeneb>;
 export type CachedBeaconStateAllForks = CachedBeaconState<BeaconStateAllForks>;
 export type CachedBeaconStateExecutions = CachedBeaconState<BeaconStateExecutions>;
 /**
- * Create CachedBeaconState computing a new EpochContext instance
+ * Create CachedBeaconState computing a new EpochCache instance
  */
 export function createCachedBeaconState<T extends BeaconStateAllForks>(
   state: T,
-  immutableData: EpochContextImmutableData,
-  opts?: EpochContextOpts
+  immutableData: EpochCacheImmutableData,
+  opts?: EpochCacheOpts
 ): T & BeaconStateCache {
-  return getCachedBeaconState(state, {
+  const epochCache = EpochCache.createFromState(state, immutableData, opts);
+  const cachedState = getCachedBeaconState(state, {
     config: immutableData.config,
-    epochCtx: EpochContext.createFromState(state, immutableData, opts),
+    epochCtx: epochCache,
     clonedCount: 0,
     clonedCountWithTransferCache: 0,
     createdWithTransferCache: false,
+    proposerRewards: createEmptyRewardCache(),
   });
+
+  return cachedState;
+}
+
+/**
+ * Create a CachedBeaconState given a cached seed state and state bytes
+ * This guarantees that the returned state shares the same tree with the seed state
+ * Check loadState() api for more details
+ * // TODO: rename to loadUnfinalizedCachedBeaconState() due to EIP-6110
+ */
+export function loadCachedBeaconState<T extends BeaconStateAllForks & BeaconStateCache>(
+  cachedSeedState: T,
+  stateBytes: Uint8Array,
+  opts?: EpochCacheOpts,
+  seedValidatorsBytes?: Uint8Array
+): T {
+  const {state: migratedState, modifiedValidators} = loadState(
+    cachedSeedState.config,
+    cachedSeedState,
+    stateBytes,
+    seedValidatorsBytes
+  );
+  const {pubkey2index, index2pubkey} = cachedSeedState.epochCtx;
+  // Get the validators sub tree once for all the loop
+  const validators = migratedState.validators;
+  for (const validatorIndex of modifiedValidators) {
+    const validator = validators.getReadonly(validatorIndex);
+    const pubkey = validator.pubkey;
+    pubkey2index.set(pubkey, validatorIndex);
+    index2pubkey[validatorIndex] = bls.PublicKey.fromBytes(pubkey, CoordType.jacobian);
+  }
+
+  return createCachedBeaconState(
+    migratedState,
+    {
+      config: cachedSeedState.config,
+      pubkey2index,
+      index2pubkey,
+    },
+    {...(opts ?? {}), ...{skipSyncPubkeys: true}}
+  ) as T;
 }
 
 /**
@@ -159,6 +207,7 @@ export function getCachedBeaconState<T extends BeaconStateAllForks>(
   (cachedState as BeaconStateCacheMutable).clonedCount = cache.clonedCount;
   (cachedState as BeaconStateCacheMutable).clonedCountWithTransferCache = cache.clonedCountWithTransferCache;
   (cachedState as BeaconStateCacheMutable).createdWithTransferCache = cache.createdWithTransferCache;
+  cachedState.proposerRewards = cache.proposerRewards;
 
   // Overwrite .clone function to preserve cache
   // TreeViewDU.clone() creates a new object that does not have the attached cache
@@ -180,6 +229,7 @@ export function getCachedBeaconState<T extends BeaconStateAllForks>(
       clonedCount: 0,
       clonedCountWithTransferCache: 0,
       createdWithTransferCache: !dontTransferCache,
+      proposerRewards: createEmptyRewardCache(), // this sets the rewards to 0 while cloning new state
     }) as T & BeaconStateCache;
   }
 

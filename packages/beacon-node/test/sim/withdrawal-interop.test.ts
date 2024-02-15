@@ -1,16 +1,17 @@
 import fs from "node:fs";
-import {Context} from "mocha";
+import {describe, it, afterAll, afterEach, vi} from "vitest";
 import {fromHexString, toHexString} from "@chainsafe/ssz";
-import {LogLevel, sleep, TimestampFormatCode} from "@lodestar/utils";
+import {LogLevel, sleep} from "@lodestar/utils";
+import {TimestampFormatCode} from "@lodestar/logger";
 import {SLOTS_PER_EPOCH, ForkName} from "@lodestar/params";
 import {ChainConfig} from "@lodestar/config";
 import {computeStartSlotAtEpoch} from "@lodestar/state-transition";
-import {Epoch, capella, Slot} from "@lodestar/types";
+import {Epoch, capella, Slot, allForks} from "@lodestar/types";
 import {ValidatorProposerConfig} from "@lodestar/validator";
 
-import {ExecutePayloadStatus, PayloadAttributes} from "../../src/execution/engine/interface.js";
+import {ExecutionPayloadStatus, PayloadAttributes} from "../../src/execution/engine/interface.js";
 import {initializeExecutionEngine} from "../../src/execution/index.js";
-import {ChainEvent} from "../../src/chain/index.js";
+import {ClockEvent} from "../../src/util/clock.js";
 import {testLogger, TestLoggerOpts} from "../utils/logger.js";
 import {getDevBeaconNode} from "../utils/node/beacon.js";
 import {BeaconRestApiServerOpts} from "../../src/api/index.js";
@@ -26,7 +27,7 @@ import {logFilesDir} from "./params.js";
 import {shell} from "./shell.js";
 
 // NOTE: How to run
-// EL_BINARY_DIR=g11tech/geth:withdrawals EL_SCRIPT_DIR=gethdocker yarn mocha test/sim/withdrawal-interop.test.ts
+// EL_BINARY_DIR=g11tech/geth:withdrawalsfeb8 EL_SCRIPT_DIR=gethdocker yarn vitest --run test/sim/withdrawal-interop.test.ts
 // ```
 
 /* eslint-disable no-console, @typescript-eslint/naming-convention */
@@ -41,7 +42,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
       `EL ENV must be provided, EL_BINARY_DIR: ${process.env.EL_BINARY_DIR}, EL_SCRIPT_DIR: ${process.env.EL_SCRIPT_DIR}`
     );
   }
-  this.timeout("10min");
+  vi.setConfig({testTimeout: 10 * 60 * 1000});
 
   const dataPath = fs.mkdtempSync("lodestar-test-withdrawal");
   const elSetupConfig = {
@@ -56,7 +57,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
   };
 
   const controller = new AbortController();
-  after(async () => {
+  afterAll(async () => {
     controller?.abort();
     await shell(`sudo rm -rf ${dataPath}`);
   });
@@ -69,6 +70,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     }
   });
 
+  // eslint-disable-next-line vitest/expect-expect
   it("Send stub payloads to EL", async () => {
     const {elClient, tearDownCallBack} = await runEL(
       {...elSetupConfig, mode: ELStartMode.PostMerge, genesisTemplate: "genesisPostWithdraw.tmpl"},
@@ -82,7 +84,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     //const controller = new AbortController();
     const executionEngine = initializeExecutionEngine(
       {mode: "http", urls: [engineRpcUrl], jwtSecretHex, retryAttempts, retryDelay},
-      {signal: controller.signal}
+      {signal: controller.signal, logger: testLogger("executionEngine")}
     );
 
     const withdrawalsVector = [
@@ -159,8 +161,8 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     if (!payloadId) throw Error("InvalidPayloadId");
 
     // 2. Get the payload
-    const payloadAndBlockValue = await executionEngine.getPayload(ForkName.capella, payloadId);
-    const payload = payloadAndBlockValue.executionPayload;
+    const payloadWithValue = await executionEngine.getPayload(ForkName.capella, payloadId);
+    const payload = payloadWithValue.executionPayload;
 
     const stateRoot = toHexString(payload.stateRoot);
     const expectedStateRoot = "0x6160c5b91ea5ded26da07f6655762deddefdbed6ddab2edc60484cfb38ef16be";
@@ -170,7 +172,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
 
     // 3. Execute the payload
     const payloadResult = await executionEngine.notifyNewPayload(ForkName.capella, payload);
-    if (payloadResult.status !== ExecutePayloadStatus.VALID) {
+    if (payloadResult.status !== ExecutionPayloadStatus.VALID) {
       throw Error("getPayload returned payload that notifyNewPayload deems invalid");
     }
 
@@ -183,6 +185,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     );
   });
 
+  // eslint-disable-next-line vitest/expect-expect
   it("Post-merge, run for a few blocks", async function () {
     console.log("\n\nPost-merge, run for a few blocks\n\n");
     const {elClient, tearDownCallBack} = await runEL(
@@ -192,17 +195,22 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     );
     afterEachCallbacks.push(() => tearDownCallBack());
 
-    await runNodeWithEL.bind(this)({
+    await runNodeWithEL({
       elClient,
       capellaEpoch: 0,
       testName: "post-merge",
     });
   });
 
-  async function runNodeWithEL(
-    this: Context,
-    {elClient, capellaEpoch, testName}: {elClient: ELClient; capellaEpoch: Epoch; testName: string}
-  ): Promise<void> {
+  async function runNodeWithEL({
+    elClient,
+    capellaEpoch,
+    testName,
+  }: {
+    elClient: ELClient;
+    capellaEpoch: Epoch;
+    testName: string;
+  }): Promise<void> {
     const {genesisBlockHash, ttd, engineRpcUrl} = elClient;
     const validatorClientCount = 1;
     const validatorsPerClient = 32;
@@ -228,13 +236,16 @@ describe("executionEngine / ExecutionEngineHttp", function () {
       testParams.SECONDS_PER_SLOT *
       1000;
 
-    this.timeout(timeout + 2 * timeoutSetupMargin);
+    vi.setConfig({testTimeout: timeout + 2 * timeoutSetupMargin});
 
     const genesisTime = Math.floor(Date.now() / 1000) + genesisSlotsDelay * testParams.SECONDS_PER_SLOT;
 
     const testLoggerOpts: TestLoggerOpts = {
-      logLevel: LogLevel.info,
-      logFile: `${logFilesDir}/mergemock-${testName}.log`,
+      level: LogLevel.info,
+      file: {
+        filepath: `${logFilesDir}/mergemock-${testName}.log`,
+        level: LogLevel.debug,
+      },
       timestampFormat: {
         format: TimestampFormatCode.EpochSlot,
         genesisTime,
@@ -281,6 +292,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     } as ValidatorProposerConfig;
 
     const {validators} = await getAndInitDevValidators({
+      logPrefix: "withdrawal-interop",
       node: bn,
       validatorsPerClient,
       validatorClientCount,
@@ -296,10 +308,10 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     });
 
     await new Promise<void>((resolve, _reject) => {
-      bn.chain.emitter.on(ChainEvent.clockEpoch, (epoch) => {
+      bn.chain.clock.on(ClockEvent.epoch, (epoch) => {
         // Resolve only if the finalized checkpoint includes execution payload
         if (epoch >= expectedEpochsToFinish) {
-          console.log(`\nGot event ${ChainEvent.clockEpoch}, stopping validators and nodes\n`);
+          console.log("\nGot event epoch, stopping validators and nodes\n");
           resolve();
         }
       });
@@ -365,7 +377,10 @@ async function retrieveCanonicalWithdrawals(bn: BeaconNode, fromSlot: Slot, toSl
     });
 
     if (block) {
-      if ((block.data as capella.SignedBeaconBlock).message.body.executionPayload?.withdrawals.length > 0) {
+      if (
+        ((block as {data: allForks.SignedBeaconBlock}).data as capella.SignedBeaconBlock).message.body.executionPayload
+          ?.withdrawals.length > 0
+      ) {
         withdrawalsBlocks++;
       }
     }

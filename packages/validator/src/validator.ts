@@ -1,10 +1,9 @@
-import {DatabaseApiOptions} from "@lodestar/db";
-import {BLSPubkey, ssz} from "@lodestar/types";
-import {createBeaconConfig, BeaconConfig} from "@lodestar/config";
-import {Genesis} from "@lodestar/types/phase0";
-import {Logger} from "@lodestar/utils";
-import {getClient, Api, routes, ApiError} from "@lodestar/api";
 import {toHexString} from "@chainsafe/ssz";
+import {BLSPubkey, phase0, ssz} from "@lodestar/types";
+import {createBeaconConfig, BeaconConfig, ChainForkConfig} from "@lodestar/config";
+import {Genesis} from "@lodestar/types/phase0";
+import {Logger, toSafePrintableUrl} from "@lodestar/utils";
+import {getClient, Api, routes, ApiError} from "@lodestar/api";
 import {computeEpochAtSlot, getCurrentSlot} from "@lodestar/state-transition";
 import {Clock, IClock} from "./util/clock.js";
 import {waitForGenesis} from "./genesis.js";
@@ -17,15 +16,34 @@ import {Interchange, InterchangeFormatVersion, ISlashingProtection} from "./slas
 import {assertEqualParams, getLoggerVc, NotEqualParamsError} from "./util/index.js";
 import {ChainHeaderTracker} from "./services/chainHeaderTracker.js";
 import {ValidatorEventEmitter} from "./services/emitter.js";
-import {ValidatorStore, Signer, ValidatorProposerConfig} from "./services/validatorStore.js";
-import {ProcessShutdownCallback, PubkeyHex} from "./types.js";
+import {ValidatorStore, Signer, ValidatorProposerConfig, defaultOptions} from "./services/validatorStore.js";
+import {LodestarValidatorDatabaseController, ProcessShutdownCallback, PubkeyHex} from "./types.js";
 import {BeaconHealth, Metrics} from "./metrics.js";
 import {MetaDataRepository} from "./repositories/metaDataRepository.js";
 import {DoppelgangerService} from "./services/doppelgangerService.js";
 
+export type ValidatorModules = {
+  opts: ValidatorOptions;
+  genesis: Genesis;
+  validatorStore: ValidatorStore;
+  slashingProtection: ISlashingProtection;
+  blockProposingService: BlockProposingService;
+  attestationService: AttestationService;
+  syncCommitteeService: SyncCommitteeService;
+  config: BeaconConfig;
+  api: Api;
+  clock: IClock;
+  chainHeaderTracker: ChainHeaderTracker;
+  logger: Logger;
+  db: LodestarValidatorDatabaseController;
+  metrics: Metrics | null;
+  controller: AbortController;
+};
+
 export type ValidatorOptions = {
   slashingProtection: ISlashingProtection;
-  dbOps: DatabaseApiOptions;
+  db: LodestarValidatorDatabaseController;
+  config: ChainForkConfig;
   api: Api | string | string[];
   signers: Signer[];
   logger: Logger;
@@ -34,10 +52,13 @@ export type ValidatorOptions = {
   afterBlockDelaySlotFraction?: number;
   scAfterBlockDelaySlotFraction?: number;
   disableAttestationGrouping?: boolean;
-  doppelgangerProtectionEnabled?: boolean;
+  doppelgangerProtection?: boolean;
   closed?: boolean;
   valProposerConfig?: ValidatorProposerConfig;
   distributed?: boolean;
+  useProduceBlockV3?: boolean;
+  broadcastValidation?: routes.beacon.BroadcastValidation;
+  blindedLocal?: boolean;
 };
 
 // TODO: Extend the timeout, and let it be customizable
@@ -53,6 +74,7 @@ enum Status {
  * Main class for the Validator client.
  */
 export class Validator {
+  private readonly genesis: Genesis;
   readonly validatorStore: ValidatorStore;
   private readonly slashingProtection: ISlashingProtection;
   private readonly blockProposingService: BlockProposingService;
@@ -63,13 +85,73 @@ export class Validator {
   private readonly clock: IClock;
   private readonly chainHeaderTracker: ChainHeaderTracker;
   private readonly logger: Logger;
+  private readonly db: LodestarValidatorDatabaseController;
   private state: Status;
   private readonly controller: AbortController;
 
-  constructor(opts: ValidatorOptions, readonly genesis: Genesis, metrics: Metrics | null = null) {
-    const {dbOps, logger, slashingProtection, signers, valProposerConfig} = opts;
-    const config = createBeaconConfig(dbOps.config, genesis.genesisValidatorsRoot);
-    this.controller = opts.abortController;
+  constructor({
+    opts,
+    genesis,
+    validatorStore,
+    slashingProtection,
+    blockProposingService,
+    attestationService,
+    syncCommitteeService,
+    config,
+    api,
+    clock,
+    chainHeaderTracker,
+    logger,
+    db,
+    metrics,
+    controller,
+  }: ValidatorModules) {
+    this.genesis = genesis;
+    this.validatorStore = validatorStore;
+    this.slashingProtection = slashingProtection;
+    this.blockProposingService = blockProposingService;
+    this.attestationService = attestationService;
+    this.syncCommitteeService = syncCommitteeService;
+    this.config = config;
+    this.api = api;
+    this.clock = clock;
+    this.chainHeaderTracker = chainHeaderTracker;
+    this.logger = logger;
+    this.controller = controller;
+    this.db = db;
+
+    if (opts.closed) {
+      this.state = Status.closed;
+    } else {
+      // "start" the validator
+      // Instantiates block and attestation services and runs them once the chain has been started.
+      this.state = Status.running;
+      this.clock.start(this.controller.signal);
+      this.chainHeaderTracker.start(this.controller.signal);
+
+      if (metrics) {
+        this.db.setMetrics(metrics.db);
+
+        this.clock.runEverySlot(() =>
+          this.fetchBeaconHealth()
+            .then((health) => metrics.beaconHealth.set(health))
+            .catch((e) => this.logger.error("Error on fetchBeaconHealth", {}, e))
+        );
+      }
+    }
+  }
+
+  get isRunning(): boolean {
+    return this.state === Status.running;
+  }
+
+  /**
+   * Initialize and start a validator client
+   */
+  static async init(opts: ValidatorOptions, genesis: Genesis, metrics: Metrics | null = null): Promise<Validator> {
+    const {db, config: chainConfig, logger, slashingProtection, signers, valProposerConfig} = opts;
+    const config = createBeaconConfig(chainConfig, genesis.genesisValidatorsRoot);
+    const controller = opts.abortController;
     const clock = new Clock(config, logger, {genesisTime: Number(genesis.genesisTime)});
     const loggerVc = getLoggerVc(logger, clock);
 
@@ -83,7 +165,7 @@ export class Validator {
           // Validator would need the beacon to respond within the slot
           // See https://github.com/ChainSafe/lodestar/issues/5315 for rationale
           timeoutMs: config.SECONDS_PER_SLOT * 1000,
-          getAbortSignal: () => this.controller.signal,
+          getAbortSignal: () => controller.signal,
         },
         {config, logger, metrics: metrics?.restApiClient}
       );
@@ -92,19 +174,29 @@ export class Validator {
     }
 
     const indicesService = new IndicesService(logger, api, metrics);
-    const doppelgangerService = opts.doppelgangerProtectionEnabled
-      ? new DoppelgangerService(logger, clock, api, indicesService, opts.processShutdownCallback, metrics)
+
+    const doppelgangerService = opts.doppelgangerProtection
+      ? new DoppelgangerService(
+          logger,
+          clock,
+          api,
+          indicesService,
+          slashingProtection,
+          opts.processShutdownCallback,
+          metrics
+        )
       : null;
 
-    const validatorStore = new ValidatorStore(
-      config,
-      slashingProtection,
-      indicesService,
-      doppelgangerService,
-      metrics,
+    const validatorStore = await ValidatorStore.init(
+      {
+        config,
+        slashingProtection,
+        indicesService,
+        doppelgangerService,
+        metrics,
+      },
       signers,
-      valProposerConfig,
-      genesis.genesisValidatorsRoot
+      valProposerConfig
     );
     pollPrepareBeaconProposer(config, loggerVc, api, clock, validatorStore, metrics);
     pollBuilderValidatorRegistration(config, loggerVc, api, clock, validatorStore, metrics);
@@ -116,9 +208,13 @@ export class Validator {
 
     const chainHeaderTracker = new ChainHeaderTracker(logger, api, emitter);
 
-    this.blockProposingService = new BlockProposingService(config, loggerVc, api, clock, validatorStore, metrics);
+    const blockProposingService = new BlockProposingService(config, loggerVc, api, clock, validatorStore, metrics, {
+      useProduceBlockV3: opts.useProduceBlockV3,
+      broadcastValidation: opts.broadcastValidation ?? defaultOptions.broadcastValidation,
+      blindedLocal: opts.blindedLocal ?? defaultOptions.blindedLocal,
+    });
 
-    this.attestationService = new AttestationService(
+    const attestationService = new AttestationService(
       loggerVc,
       api,
       clock,
@@ -133,7 +229,7 @@ export class Validator {
       }
     );
 
-    this.syncCommitteeService = new SyncCommitteeService(
+    const syncCommitteeService = new SyncCommitteeService(
       config,
       loggerVc,
       api,
@@ -148,45 +244,28 @@ export class Validator {
       }
     );
 
-    this.config = config;
-    this.logger = logger;
-    this.api = api;
-    this.clock = clock;
-    this.validatorStore = validatorStore;
-    this.chainHeaderTracker = chainHeaderTracker;
-    this.slashingProtection = slashingProtection;
-
-    if (metrics) {
-      opts.dbOps.controller.setMetrics(metrics.db);
-    }
-
-    if (opts.closed) {
-      this.state = Status.closed;
-    } else {
-      // "start" the validator
-      // Instantiates block and attestation services and runs them once the chain has been started.
-      this.state = Status.running;
-      this.clock.start(this.controller.signal);
-      this.chainHeaderTracker.start(this.controller.signal);
-
-      if (metrics) {
-        this.clock.runEverySlot(() =>
-          this.fetchBeaconHealth()
-            .then((health) => metrics.beaconHealth.set(health))
-            .catch((e) => this.logger.error("Error on fetchBeaconHealth", {}, e))
-        );
-      }
-    }
-  }
-
-  get isRunning(): boolean {
-    return this.state === Status.running;
+    return new this({
+      opts,
+      genesis,
+      validatorStore,
+      slashingProtection,
+      blockProposingService,
+      attestationService,
+      syncCommitteeService,
+      config,
+      api,
+      clock,
+      chainHeaderTracker,
+      logger,
+      db,
+      metrics,
+      controller,
+    });
   }
 
   /** Waits for genesis and genesis time */
   static async initializeFromBeaconNode(opts: ValidatorOptions, metrics?: Metrics | null): Promise<Validator> {
-    const {config} = opts.dbOps;
-    const {logger} = opts;
+    const {logger, config} = opts;
 
     let api: Api;
     if (typeof opts.api === "string" || Array.isArray(opts.api)) {
@@ -194,6 +273,7 @@ export class Validator {
       // This new api instance can make do with default timeout as a faster timeout is
       // not necessary since this instance won't be used for validator duties
       api = getClient({urls, getAbortSignal: () => opts.abortController.signal}, {config, logger});
+      logger.info("Beacon node", {urls: urls.map(toSafePrintableUrl).toString()});
     } else {
       api = opts.api;
     }
@@ -209,7 +289,22 @@ export class Validator {
     await assertEqualGenesis(opts, genesis);
     logger.info("Verified connected beacon node and validator have the same genesisValidatorRoot");
 
-    return new Validator(opts, genesis, metrics);
+    const {useProduceBlockV3, broadcastValidation = defaultOptions.broadcastValidation, valProposerConfig} = opts;
+    const defaultBuilderSelection =
+      valProposerConfig?.defaultConfig.builder?.selection ?? defaultOptions.builderSelection;
+    const strictFeeRecipientCheck = valProposerConfig?.defaultConfig.strictFeeRecipientCheck ?? false;
+    const suggestedFeeRecipient = valProposerConfig?.defaultConfig.feeRecipient ?? defaultOptions.suggestedFeeRecipient;
+
+    logger.info("Initializing validator", {
+      // if no explicit option is provided, useProduceBlockV3 will be auto enabled on/post deneb
+      useProduceBlockV3: useProduceBlockV3 === undefined ? "deneb+" : useProduceBlockV3,
+      broadcastValidation,
+      defaultBuilderSelection,
+      suggestedFeeRecipient,
+      strictFeeRecipientCheck,
+    });
+
+    return Validator.init(opts, genesis, metrics);
   }
 
   removeDutiesForKey(pubkey: PubkeyHex): void {
@@ -224,6 +319,7 @@ export class Validator {
   async close(): Promise<void> {
     if (this.state === Status.closed) return;
     this.controller.abort();
+    await this.db.close();
     this.state = Status.closed;
   }
 
@@ -239,6 +335,17 @@ export class Validator {
    * Perform a voluntary exit for the given validator by its key.
    */
   async voluntaryExit(publicKey: string, exitEpoch?: number): Promise<void> {
+    const signedVoluntaryExit = await this.signVoluntaryExit(publicKey, exitEpoch);
+
+    ApiError.assert(await this.api.beacon.submitPoolVoluntaryExit(signedVoluntaryExit));
+
+    this.logger.info(`Submitted voluntary exit for ${publicKey} to the network`);
+  }
+
+  /**
+   * Create a signed voluntary exit message for the given validator by its key.
+   */
+  async signVoluntaryExit(publicKey: string, exitEpoch?: number): Promise<phase0.SignedVoluntaryExit> {
     const res = await this.api.beacon.getStateValidators("head", {id: [publicKey]});
     ApiError.assert(res, "Can not fetch state validators from beacon node");
 
@@ -252,10 +359,7 @@ export class Validator {
       exitEpoch = computeEpochAtSlot(getCurrentSlot(this.config, this.clock.genesisTime));
     }
 
-    const signedVoluntaryExit = await this.validatorStore.signVoluntaryExit(publicKey, stateValidator.index, exitEpoch);
-    ApiError.assert(await this.api.beacon.submitPoolVoluntaryExit(signedVoluntaryExit));
-
-    this.logger.info(`Submitted voluntary exit for ${publicKey} to the network`);
+    return this.validatorStore.signVoluntaryExit(publicKey, stateValidator.index, exitEpoch);
   }
 
   private async fetchBeaconHealth(): Promise<BeaconHealth> {
@@ -279,7 +383,7 @@ export class Validator {
 /** Assert the same genesisValidatorRoot and genesisTime */
 async function assertEqualGenesis(opts: ValidatorOptions, genesis: Genesis): Promise<void> {
   const nodeGenesisValidatorRoot = genesis.genesisValidatorsRoot;
-  const metaDataRepository = new MetaDataRepository(opts.dbOps);
+  const metaDataRepository = new MetaDataRepository(opts.db);
   const genesisValidatorsRoot = await metaDataRepository.getGenesisValidatorsRoot();
   if (genesisValidatorsRoot) {
     if (!ssz.Root.equals(genesisValidatorsRoot, nodeGenesisValidatorRoot)) {

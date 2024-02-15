@@ -29,11 +29,11 @@ export function toExpectedCase(
   }
 }
 
-function isObjectObject(val: unknown): boolean {
+function isObjectObject(val: unknown): val is object {
   return val != null && typeof val === "object" && Array.isArray(val) === false;
 }
 
-export function isPlainObject(o: unknown): boolean {
+export function isPlainObject(o: unknown): o is object {
   if (isObjectObject(o) === false) return false;
 
   // If has modified constructor
@@ -51,6 +51,10 @@ export function isPlainObject(o: unknown): boolean {
 
   // Most likely a plain Object
   return true;
+}
+
+export function isEmptyObject(value: unknown): boolean {
+  return isObjectObject(value) && Object.keys(value).length === 0;
 }
 
 /**
@@ -91,10 +95,7 @@ export function objectToExpectedCase<T extends Record<string, unknown> | Record<
         throw new Error(`object already has a ${newName} property`);
       }
 
-      newObj[newName] = objectToExpectedCase(
-        (obj as Record<string, unknown>)[name] as Record<string, unknown>,
-        expectedCase
-      );
+      newObj[newName] = objectToExpectedCase(obj[name] as Record<string, unknown>, expectedCase);
     }
     return newObj as T;
   }

@@ -1,11 +1,10 @@
-import "mocha";
 import {promisify} from "node:util";
-import {expect} from "chai";
+import {describe, it, beforeAll, afterAll, expect} from "vitest";
 import leveldown from "leveldown";
+import {fromHexString, toHexString} from "@chainsafe/ssz";
 import {sleep} from "@lodestar/utils";
 import {LevelDbController} from "@lodestar/db";
 
-import {fromHexString, toHexString} from "@chainsafe/ssz";
 import {ssz} from "@lodestar/types";
 import {Eth1ForBlockProduction} from "../../../src/eth1/index.js";
 import {Eth1Options} from "../../../src/eth1/options.js";
@@ -27,35 +26,27 @@ const pyrmontDepositsDataRoot = [
   "0x61cef7d8a3f7c590a2dc066ae1c95def5ce769b3e9471fdb34f36f7a7246965e",
 ];
 
+// https://github.com/ChainSafe/lodestar/issues/5967
 describe.skip("eth1 / Eth1Provider", function () {
-  this.timeout("2 min");
-
   const controller = new AbortController();
 
   const config = getTestnetConfig();
   const logger = testLogger();
 
   let db: BeaconDb;
-  let dbController: LevelDbController;
   let interval: NodeJS.Timeout;
 
-  before(async () => {
+  beforeAll(async () => {
     // Nuke DB to make sure it's empty
     await promisify<string>(leveldown.destroy)(dbLocation);
 
-    dbController = new LevelDbController({name: dbLocation}, {logger});
-    db = new BeaconDb({
-      config,
-      controller: dbController,
-    });
-
-    await db.start();
+    db = new BeaconDb(config, await LevelDbController.create({name: dbLocation}, {logger}));
   });
 
-  after(async () => {
+  afterAll(async () => {
     clearInterval(interval);
     controller.abort();
-    await db.stop();
+    await db.close();
     await promisify<string>(leveldown.destroy)(dbLocation);
   });
 
@@ -124,9 +115,9 @@ describe.skip("eth1 / Eth1Provider", function () {
     const state = createCachedBeaconStateTest(tbState, config);
 
     const result = await eth1ForBlockProduction.getEth1DataAndDeposits(state);
-    expect(result.eth1Data).to.deep.equal(latestEth1Data, "Wrong eth1Data for block production");
-    expect(
-      result.deposits.map((deposit) => toHexString(ssz.phase0.DepositData.hashTreeRoot(deposit.data)))
-    ).to.deep.equal(pyrmontDepositsDataRoot, "Wrong deposits for for block production");
+    expect(result.eth1Data).toEqual(latestEth1Data);
+    expect(result.deposits.map((deposit) => toHexString(ssz.phase0.DepositData.hashTreeRoot(deposit.data)))).toEqual(
+      pyrmontDepositsDataRoot
+    );
   });
 });

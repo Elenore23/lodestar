@@ -1,6 +1,6 @@
 import {ChainForkConfig} from "@lodestar/config";
 import {Api} from "../routes/index.js";
-import {ServerInstance, ServerRoute, RouteConfig, registerRoute} from "../../utils/server/index.js";
+import {ApiError, ServerInstance, ServerRoute, RouteConfig, registerRoute} from "../../utils/server/index.js";
 
 import {ServerApi} from "../../interfaces.js";
 import * as beacon from "./beacon.js";
@@ -13,8 +13,11 @@ import * as node from "./node.js";
 import * as proof from "./proof.js";
 import * as validator from "./validator.js";
 
+// Re-export for usage in beacon-node
+export {ApiError};
+
 // Re-export for convenience
-export {RouteConfig};
+export type {RouteConfig};
 
 export function registerRoutes(
   server: ServerInstance,
@@ -34,7 +37,7 @@ export function registerRoutes(
     beacon: () => beacon.getRoutes(config, api.beacon),
     config: () => configApi.getRoutes(config, api.config),
     debug: () => debug.getRoutes(config, api.debug),
-    events: () => events.getRoutes(config, api.events),
+    events: () => events.getRoutes(api.events),
     lightclient: () => lightclient.getRoutes(config, api.lightclient),
     lodestar: () => lodestar.getRoutes(config, api.lodestar),
     node: () => node.getRoutes(config, api.node),
@@ -49,7 +52,7 @@ export function registerRoutes(
     }
 
     for (const route of Object.values(routes())) {
-      registerRoute(server, route);
+      registerRoute(server, route, namespace);
     }
   }
 }

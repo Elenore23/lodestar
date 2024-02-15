@@ -1,6 +1,6 @@
-import sinon from "sinon";
 import {itBench} from "@dapplion/benchmark";
 import {expect} from "chai";
+import {BitArray, toHexString} from "@chainsafe/ssz";
 import {
   CachedBeaconStateAltair,
   computeEpochAtSlot,
@@ -8,11 +8,11 @@ import {
   getBlockRootAtSlot,
 } from "@lodestar/state-transition";
 import {HISTORICAL_ROOTS_LIMIT, SLOTS_PER_EPOCH, TIMELY_SOURCE_FLAG_INDEX} from "@lodestar/params";
-import {BitArray, toHexString} from "@chainsafe/ssz";
 import {ExecutionStatus, ForkChoice, IForkChoiceStore, ProtoArray} from "@lodestar/fork-choice";
 import {ssz} from "@lodestar/types";
-import {AggregatedAttestationPool} from "../../../../src/chain/opPools/aggregatedAttestationPool.js";
+// eslint-disable-next-line import/no-relative-packages
 import {generatePerfTestCachedStateAltair} from "../../../../../state-transition/test/perf/util.js";
+import {AggregatedAttestationPool} from "../../../../src/chain/opPools/aggregatedAttestationPool.js";
 import {computeAnchorCheckpoint} from "../../../../src/chain/initState.js";
 
 /** Same to https://github.com/ethereum/eth2.0-specs/blob/v1.1.0-alpha.5/specs/altair/beacon-chain.md#has_flag */
@@ -28,7 +28,6 @@ describe("getAttestationsForBlock", () => {
   let originalState: CachedBeaconStateAltair;
   let protoArray: ProtoArray;
   let forkchoice: ForkChoice;
-  const sandbox = sinon.createSandbox();
 
   before(function () {
     this.timeout(2 * 60 * 1000); // Generating the states for the first time is very slow
@@ -102,11 +101,17 @@ describe("getAttestationsForBlock", () => {
       );
     }
 
+    let totalBalance = 0;
+    for (let i = 0; i < originalState.epochCtx.effectiveBalanceIncrements.length; i++) {
+      totalBalance += originalState.epochCtx.effectiveBalanceIncrements[i];
+    }
+
     const fcStore: IForkChoiceStore = {
       currentSlot: originalState.slot,
       justified: {
         checkpoint: {...justifiedCheckpoint, rootHex: toHexString(justifiedCheckpoint.root)},
         balances: originalState.epochCtx.effectiveBalanceIncrements,
+        totalBalance,
       },
       unrealizedJustified: {
         checkpoint: {...justifiedCheckpoint, rootHex: toHexString(justifiedCheckpoint.root)},
@@ -118,10 +123,6 @@ describe("getAttestationsForBlock", () => {
       equivocatingIndices: new Set(),
     };
     forkchoice = new ForkChoice(originalState.config, fcStore, protoArray);
-  });
-
-  after(() => {
-    sandbox.restore();
   });
 
   itBench({

@@ -3,15 +3,18 @@ import {defaultOptions as defaultValidatorOptions} from "@lodestar/validator";
 import {ArchiverOpts} from "./archiver/index.js";
 import {ForkChoiceOpts} from "./forkChoice/index.js";
 import {LightClientServerOpts} from "./lightClient/index.js";
+import {ShufflingCacheOpts} from "./shufflingCache.js";
 
 export type IChainOptions = BlockProcessOpts &
   PoolOpts &
   SeenCacheOpts &
   ForkChoiceOpts &
   ArchiverOpts &
+  ShufflingCacheOpts &
   LightClientServerOpts & {
     blsVerifyAllMainThread?: boolean;
     blsVerifyAllMultiThread?: boolean;
+    persistProducedBlocks?: boolean;
     persistInvalidSszObjects?: boolean;
     persistInvalidSszObjectsDir?: string;
     skipCreateStateCacheIfAvailable?: boolean;
@@ -20,7 +23,13 @@ export type IChainOptions = BlockProcessOpts &
     /** Ensure blobs returned by the execution engine are valid */
     sanityCheckExecutionEngineBlobs?: boolean;
     /** Max number of produced blobs by local validators to cache */
-    maxCachedBlobsSidecar?: number;
+    maxCachedBlobSidecars?: number;
+    /** Max number of produced block roots (blinded or full) cached for broadcast validations */
+    maxCachedProducedRoots?: number;
+    /** Option to load a custom kzg trusted setup in txt format */
+    trustedSetup?: string;
+    broadcastValidationStrictness?: string;
+    minSameMessageSignatureSetsToBatch: number;
   };
 
 export type BlockProcessOpts = {
@@ -32,9 +41,9 @@ export type BlockProcessOpts = {
   /**
    * Override SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY
    */
-  safeSlotsToImportOptimistically: number;
+  safeSlotsToImportOptimistically?: number;
   /**
-   * Assert progressive balances the same to EpochProcess
+   * Assert progressive balances the same to EpochTransitionCache
    */
   assertCorrectProgressiveBalances?: boolean;
   /** Used for fork_choice spec tests */
@@ -47,6 +56,17 @@ export type BlockProcessOpts = {
    */
   disableImportExecutionFcU?: boolean;
   emitPayloadAttributes?: boolean;
+
+  /**
+   * Used to specify to specify to run verifications only and not
+   * to save the block or log transitions for e.g. doing
+   * broadcastValidation while publishing the block
+   */
+  verifyOnly?: boolean;
+  /** Used to specify to skip execution payload validation */
+  skipVerifyExecutionPayload?: boolean;
+  /** Used to specify to skip block signatures validation */
+  skipVerifyBlockSignatures?: boolean;
 };
 
 export type PoolOpts = {
@@ -77,4 +97,9 @@ export const defaultChainOptions: IChainOptions = {
   // for gossip block validation, it's unlikely we see a reorg with 32 slots
   // for attestation validation, having this value ensures we don't have to regen states most of the time
   maxSkipSlots: 32,
+  broadcastValidationStrictness: "warn",
+  // should be less than or equal to MIN_SIGNATURE_SETS_TO_BATCH_VERIFY
+  // batching too much may block the I/O thread so if useWorker=false, suggest this value to be 32
+  // since this batch attestation work is designed to work with useWorker=true, make this the lowest value
+  minSameMessageSignatureSetsToBatch: 2,
 };

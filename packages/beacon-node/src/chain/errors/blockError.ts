@@ -1,8 +1,9 @@
+import {toHexString} from "@chainsafe/ssz";
 import {allForks, RootHex, Slot, ValidatorIndex} from "@lodestar/types";
 import {LodestarError} from "@lodestar/utils";
-import {toHexString} from "@chainsafe/ssz";
 import {CachedBeaconStateAllForks} from "@lodestar/state-transition";
-import {ExecutePayloadStatus} from "../../execution/engine/interface.js";
+import {ExecutionPayloadStatus} from "../../execution/engine/interface.js";
+import {QueueErrorCode} from "../../util/queue/index.js";
 import {GossipActionError} from "./gossipValidation.js";
 
 export enum BlockErrorCode {
@@ -62,11 +63,13 @@ export enum BlockErrorCode {
   /** The attestation head block is too far behind the attestation slot, causing many skip slots.
   This is deemed a DoS risk */
   TOO_MANY_SKIPPED_SLOTS = "TOO_MANY_SKIPPED_SLOTS",
+  /** The blobs are unavailable */
+  DATA_UNAVAILABLE = "BLOCK_ERROR_DATA_UNAVAILABLE",
 }
 
 type ExecutionErrorStatus = Exclude<
-  ExecutePayloadStatus,
-  ExecutePayloadStatus.VALID | ExecutePayloadStatus.ACCEPTED | ExecutePayloadStatus.SYNCING
+  ExecutionPayloadStatus,
+  ExecutionPayloadStatus.VALID | ExecutionPayloadStatus.ACCEPTED | ExecutionPayloadStatus.SYNCING
 >;
 
 export type BlockErrorType =
@@ -102,12 +105,16 @@ export type BlockErrorType =
   | {code: BlockErrorCode.TOO_MUCH_GAS_USED; gasUsed: number; gasLimit: number}
   | {code: BlockErrorCode.SAME_PARENT_HASH; blockHash: RootHex}
   | {code: BlockErrorCode.TRANSACTIONS_TOO_BIG; size: number; max: number}
-  | {code: BlockErrorCode.EXECUTION_ENGINE_ERROR; execStatus: ExecutionErrorStatus; errorMessage: string};
+  | {code: BlockErrorCode.EXECUTION_ENGINE_ERROR; execStatus: ExecutionErrorStatus; errorMessage: string}
+  | {code: BlockErrorCode.DATA_UNAVAILABLE};
 
 export class BlockGossipError extends GossipActionError<BlockErrorType> {}
 
 export class BlockError extends LodestarError<BlockErrorType> {
-  constructor(readonly signedBlock: allForks.SignedBeaconBlock, type: BlockErrorType) {
+  constructor(
+    readonly signedBlock: allForks.SignedBeaconBlock,
+    type: BlockErrorType
+  ) {
     super(type);
   }
 
@@ -116,20 +123,34 @@ export class BlockError extends LodestarError<BlockErrorType> {
   }
 }
 
+export function isBlockErrorAborted(e: unknown): e is BlockError {
+  return (
+    e instanceof BlockError &&
+    e.type.code === BlockErrorCode.EXECUTION_ENGINE_ERROR &&
+    e.type.errorMessage === QueueErrorCode.QUEUE_ABORTED
+  );
+}
+
 export function renderBlockErrorType(type: BlockErrorType): Record<string, string | number | null> {
   switch (type.code) {
     case BlockErrorCode.PRESTATE_MISSING:
     case BlockErrorCode.PER_BLOCK_PROCESSING_ERROR:
     case BlockErrorCode.BEACON_CHAIN_ERROR:
       return {
+        code: type.code,
         error: type.error.message,
       };
 
     case BlockErrorCode.INVALID_SIGNATURE:
-      return {};
+      return {
+        code: type.code,
+        slot: type.state.slot,
+      };
 
     case BlockErrorCode.INVALID_STATE_ROOT:
       return {
+        code: type.code,
+        slot: type.postState.slot,
         root: toHexString(type.root),
         expectedRoot: toHexString(type.expectedRoot),
       };

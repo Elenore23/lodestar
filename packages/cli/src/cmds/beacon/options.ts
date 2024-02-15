@@ -1,7 +1,6 @@
-import {Options} from "yargs";
 import {beaconNodeOptions, paramsOptions, BeaconNodeArgs} from "../../options/index.js";
-import {logOptions} from "../../options/logOptions.js";
-import {CliCommandOptions, LogArgs} from "../../util/index.js";
+import {LogArgs, logOptions} from "../../options/logOptions.js";
+import {CliCommandOptions, CliOptionDefinition} from "../../util/index.js";
 import {defaultBeaconPaths, BeaconPaths} from "./paths.js";
 
 type BeaconExtraArgs = {
@@ -12,11 +11,16 @@ type BeaconExtraArgs = {
   checkpointSyncUrl?: string;
   checkpointState?: string;
   wssCheckpoint?: string;
+  forceCheckpointSync?: boolean;
   beaconDir?: string;
   dbDir?: string;
   persistInvalidSszObjectsDir?: string;
+  persistInvalidSszObjectsRetentionHours?: number;
   peerStoreDir?: string;
   persistNetworkIdentity?: boolean;
+  private?: boolean;
+  validatorMonitorLogs?: boolean;
+  attachToGlobalThis?: boolean;
 };
 
 export const beaconExtraOptions: CliCommandOptions<BeaconExtraArgs> = {
@@ -59,8 +63,15 @@ export const beaconExtraOptions: CliCommandOptions<BeaconExtraArgs> = {
 
   wssCheckpoint: {
     description:
-      "Start beacon node off a state at the provided weak subjectivity checkpoint, to be supplied in <blockRoot>:<epoch> format. For example, 0x1234:100 will sync and start off from the weakSubjectivity state at checkpoint of epoch 100 with block root 0x1234.",
+      "Start beacon node off a state at the provided weak subjectivity checkpoint, to be supplied in <blockRoot>:<epoch> format. For example, 0x1234:100 will sync and start off from the weak subjectivity state at checkpoint of epoch 100 with block root 0x1234.",
     type: "string",
+    group: "weak subjectivity",
+  },
+
+  forceCheckpointSync: {
+    description:
+      "Force syncing from checkpoint state even if db state is within weak subjectivity period. This helps to avoid long sync times after node has been offline for a while.",
+    type: "boolean",
     group: "weak subjectivity",
   },
 
@@ -85,6 +96,12 @@ export const beaconExtraOptions: CliCommandOptions<BeaconExtraArgs> = {
     type: "string",
   },
 
+  persistInvalidSszObjectsRetentionHours: {
+    description: "Number of hours to keep invalid SSZ objects on local disk",
+    hidden: true,
+    type: "number",
+  },
+
   peerStoreDir: {
     hidden: true,
     description: "Peer store directory",
@@ -95,6 +112,23 @@ export const beaconExtraOptions: CliCommandOptions<BeaconExtraArgs> = {
   persistNetworkIdentity: {
     hidden: true,
     description: "Whether to reuse the same peer-id across restarts",
+    type: "boolean",
+  },
+
+  private: {
+    description:
+      "Do not send implementation details over p2p identify protocol and in builder, execution engine and eth1 requests",
+    type: "boolean",
+  },
+
+  validatorMonitorLogs: {
+    description: "Log validator monitor events as info. This requires metrics to be enabled.",
+    type: "boolean",
+  },
+
+  attachToGlobalThis: {
+    hidden: true,
+    description: "Attach the beacon node to `globalThis`. Useful to inspect a running beacon node.",
     type: "boolean",
   },
 };
@@ -109,7 +143,7 @@ type ENRArgs = {
   nat?: boolean;
 };
 
-const enrOptions: Record<string, Options> = {
+const enrOptions: Record<string, CliOptionDefinition> = {
   "enr.ip": {
     description: "Override ENR IP entry",
     type: "string",
@@ -147,22 +181,12 @@ const enrOptions: Record<string, Options> = {
   },
 };
 
-export type DebugArgs = {attachToGlobalThis: boolean};
-export const debugOptions: CliCommandOptions<DebugArgs> = {
-  attachToGlobalThis: {
-    hidden: true,
-    description: "Attach the beacon node to `globalThis`. Useful to inspect a running beacon node.",
-    type: "boolean",
-  },
-};
+export type BeaconArgs = BeaconExtraArgs & LogArgs & BeaconPaths & BeaconNodeArgs & ENRArgs;
 
-export type BeaconArgs = BeaconExtraArgs & LogArgs & BeaconPaths & BeaconNodeArgs & ENRArgs & DebugArgs;
-
-export const beaconOptions: {[k: string]: Options} = {
+export const beaconOptions: {[k: string]: CliOptionDefinition} = {
   ...beaconExtraOptions,
   ...logOptions,
   ...beaconNodeOptions,
   ...paramsOptions,
   ...enrOptions,
-  ...debugOptions,
 };

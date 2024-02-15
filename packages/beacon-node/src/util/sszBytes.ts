@@ -1,6 +1,7 @@
-import {BitArray} from "@chainsafe/ssz";
+import {BitArray, deserializeUint8ArrayBitListFromBytes} from "@chainsafe/ssz";
 import {BLSSignature, RootHex, Slot} from "@lodestar/types";
 import {toHex} from "@lodestar/utils";
+import {BYTES_PER_FIELD_ELEMENT, FIELD_ELEMENTS_PER_BLOB} from "@lodestar/params";
 
 export type BlockRootHex = RootHex;
 export type AttDataBase64 = string;
@@ -180,29 +181,23 @@ export function getSlotFromSignedBeaconBlockSerialized(data: Uint8Array): Slot |
 }
 
 /**
- * 4 + 4 + SLOT_BYTES_POSITION_IN_SIGNED_BEACON_BLOCK = 4 + 4 + (4 + 96) = 108
- * class SignedBeaconBlockAndBlobsSidecar(Container):
- *  beaconBlock: SignedBeaconBlock [offset - 4 bytes]
- *  blobsSidecar: BlobsSidecar,
+ * class BlobSidecar(Container):
+ *  index: BlobIndex [fixed - 8 bytes ],
+ *  blob: Blob, BYTES_PER_FIELD_ELEMENT * FIELD_ELEMENTS_PER_BLOB
+ *  kzgCommitment: Bytes48,
+ *  kzgProof: Bytes48,
+ *  signedBlockHeader:
+ *    slot: 8 bytes
  */
 
-/**
- * Variable size.
- * class BlobsSidecar(Container):
- *   beaconBlockRoot: Root,
- *   beaconBlockSlot: Slot,
- *   blobs: Blobs,
- *   kzgAggregatedProof: KZGProof,
- */
-const SLOT_BYTES_POSITION_IN_SIGNED_BEACON_BLOCK_AND_BLOBS_SIDECAR =
-  VARIABLE_FIELD_OFFSET + VARIABLE_FIELD_OFFSET + SLOT_BYTES_POSITION_IN_SIGNED_BEACON_BLOCK;
+const SLOT_BYTES_POSITION_IN_SIGNED_BLOB_SIDECAR = 8 + BYTES_PER_FIELD_ELEMENT * FIELD_ELEMENTS_PER_BLOB + 48 + 48;
 
-export function getSlotFromSignedBeaconBlockAndBlobsSidecarSerialized(data: Uint8Array): Slot | null {
-  if (data.length < SLOT_BYTES_POSITION_IN_SIGNED_BEACON_BLOCK_AND_BLOBS_SIDECAR + SLOT_SIZE) {
+export function getSlotFromBlobSidecarSerialized(data: Uint8Array): Slot | null {
+  if (data.length < SLOT_BYTES_POSITION_IN_SIGNED_BLOB_SIDECAR + SLOT_SIZE) {
     return null;
   }
 
-  return getSlotFromOffset(data, SLOT_BYTES_POSITION_IN_SIGNED_BEACON_BLOCK_AND_BLOBS_SIDECAR);
+  return getSlotFromOffset(data, SLOT_BYTES_POSITION_IN_SIGNED_BLOB_SIDECAR);
 }
 
 function getSlotFromOffset(data: Uint8Array, offset: number): Slot {
@@ -210,40 +205,4 @@ function getSlotFromOffset(data: Uint8Array, offset: number): Slot {
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   // Read only the first 4 bytes of Slot, max value is 4,294,967,295 will be reached 1634 years after genesis
   return dv.getUint32(offset, true);
-}
-
-type BitArrayDeserialized = {uint8Array: Uint8Array; bitLen: number};
-
-/**
- * This is copied from ssz bitList.ts
- * TODO: export this util from there
- */
-function deserializeUint8ArrayBitListFromBytes(data: Uint8Array, start: number, end: number): BitArrayDeserialized {
-  if (end > data.length) {
-    throw Error(`BitList attempting to read byte ${end} of data length ${data.length}`);
-  }
-
-  const lastByte = data[end - 1];
-  const size = end - start;
-
-  if (lastByte === 0) {
-    throw new Error("Invalid deserialized bitlist, padding bit required");
-  }
-
-  if (lastByte === 1) {
-    // Buffer.prototype.slice does not copy memory, Enforce Uint8Array usage https://github.com/nodejs/node/issues/28087
-    const uint8Array = Uint8Array.prototype.slice.call(data, start, end - 1);
-    const bitLen = (size - 1) * 8;
-    return {uint8Array, bitLen};
-  }
-
-  // the last byte is > 1, so a padding bit will exist in the last byte and need to be removed
-  // Buffer.prototype.slice does not copy memory, Enforce Uint8Array usage https://github.com/nodejs/node/issues/28087
-  const uint8Array = Uint8Array.prototype.slice.call(data, start, end);
-  // mask lastChunkByte
-  const lastByteBitLength = lastByte.toString(2).length - 1;
-  const bitLen = (size - 1) * 8 + lastByteBitLength;
-  const mask = 0xff >> (8 - lastByteBitLength);
-  uint8Array[size - 1] &= mask;
-  return {uint8Array, bitLen};
 }

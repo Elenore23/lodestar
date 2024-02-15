@@ -1,10 +1,10 @@
 import mitt from "mitt";
 import {init as initBls} from "@chainsafe/bls/switchable";
+import {fromHexString, toHexString} from "@chainsafe/ssz";
 import {EPOCHS_PER_SYNC_COMMITTEE_PERIOD} from "@lodestar/params";
 import {phase0, RootHex, Slot, SyncPeriod, allForks} from "@lodestar/types";
 import {createBeaconConfig, BeaconConfig, ChainForkConfig} from "@lodestar/config";
 import {isErrorAborted, sleep} from "@lodestar/utils";
-import {fromHexString, toHexString} from "@chainsafe/ssz";
 import {getCurrentSlot, slotWithFutureTolerance, timeUntilNextEpoch} from "./utils/clock.js";
 import {isNode} from "./utils/utils.js";
 import {chunkifyInclusiveRange} from "./utils/chunkify.js";
@@ -18,7 +18,7 @@ import {LightClientTransport} from "./transport/interface.js";
 
 // Re-export types
 export {LightclientEvent} from "./events.js";
-export {SyncCommitteeFast} from "./types.js";
+export type {SyncCommitteeFast} from "./types.js";
 export {upgradeLightClientFinalityUpdate, upgradeLightClientOptimisticUpdate} from "./spec/utils.js";
 
 export type GenesisData = {
@@ -200,9 +200,9 @@ export class Lightclient {
     for (const [fromPeriodRng, toPeriodRng] of periodRanges) {
       const count = toPeriodRng + 1 - fromPeriodRng;
       const updates = await this.transport.getUpdates(fromPeriodRng, count);
-      for (const update of updates) {
-        this.processSyncCommitteeUpdate(update.data);
-        this.logger.debug("processed sync update", {slot: update.data.attestedHeader.beacon.slot});
+      for (const update of updates.data) {
+        this.processSyncCommitteeUpdate(update);
+        this.logger.debug("processed sync update", {slot: update.attestedHeader.beacon.slot});
 
         // Yield to the macro queue, verifying updates is somewhat expensive and we want responsiveness
         await new Promise((r) => setTimeout(r, 0));
@@ -242,6 +242,13 @@ export class Lightclient {
           await new Promise((r) => setTimeout(r, ON_ERROR_RETRY_MS));
           continue;
         }
+      }
+
+      // After successfully syncing, track head if not already
+      if (this.runStatus.code !== RunStatusCode.started) {
+        const controller = new AbortController();
+        this.updateRunStatus({code: RunStatusCode.started, controller});
+        this.logger.debug("Started tracking the head");
 
         // Fetch latest optimistic head to prevent a potential 12 seconds lag between syncing and getting the first head,
         // Don't retry, this is a non-critical UX improvement
@@ -251,13 +258,6 @@ export class Lightclient {
         } catch (e) {
           this.logger.error("Error fetching getLatestHeadUpdate", {currentPeriod}, e as Error);
         }
-      }
-
-      // After successfully syncing, track head if not already
-      if (this.runStatus.code !== RunStatusCode.started) {
-        const controller = new AbortController();
-        this.updateRunStatus({code: RunStatusCode.started, controller});
-        this.logger.debug("Started tracking the head");
 
         this.transport.onOptimisticUpdate(this.processOptimisticUpdate.bind(this));
         this.transport.onFinalityUpdate(this.processFinalizedUpdate.bind(this));

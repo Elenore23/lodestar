@@ -1,9 +1,10 @@
 import {itBench} from "@dapplion/benchmark";
+import {MAX_EFFECTIVE_BALANCE} from "@lodestar/params";
 import {
   beforeProcessEpoch,
   CachedBeaconStatePhase0,
   CachedBeaconStateAllForks,
-  EpochProcess,
+  EpochTransitionCache,
 } from "../../../src/index.js";
 import {processSlashings} from "../../../src/epoch/processSlashings.js";
 import {generatePerfTestCachedStatePhase0, numValidators} from "../util.js";
@@ -24,7 +25,7 @@ describe("phase0 processSlashings", () => {
     {id: "worstcase", indicesToSlashLen: 8704},
   ];
 
-  // Provide flat `epochProcess.balances` + flat `epochProcess.validators`
+  // Provide flat `cache.balances` + flat `cache.validators`
   // which will it update validators tree
 
   for (const {id, indicesToSlashLen} of testCases) {
@@ -33,8 +34,10 @@ describe("phase0 processSlashings", () => {
       yieldEventLoopAfterEach: true, // So SubTree(s)'s WeakRef can be garbage collected https://github.com/nodejs/node/issues/39902
       minRuns: 5, // Worst case is very slow
       before: () => getProcessSlashingsTestData(indicesToSlashLen),
-      beforeEach: ({state, epochProcess}) => ({state: state.clone(), epochProcess}),
-      fn: ({state, epochProcess}) => processSlashings(state as CachedBeaconStatePhase0, epochProcess),
+      beforeEach: ({state, cache}) => ({state: state.clone(), cache}),
+      fn: ({state, cache}) => {
+        processSlashings(state as CachedBeaconStatePhase0, cache, false);
+      },
     });
   }
 });
@@ -44,16 +47,21 @@ describe("phase0 processSlashings", () => {
  */
 function getProcessSlashingsTestData(indicesToSlashLen: number): {
   state: CachedBeaconStateAllForks;
-  epochProcess: EpochProcess;
+  cache: EpochTransitionCache;
 } {
   const state = generatePerfTestCachedStatePhase0({goBackOneSlot: true});
-  const epochProcess = beforeProcessEpoch(state);
+  const cache = beforeProcessEpoch(state);
+  state.slashings.set(0, indicesToSlashLen * MAX_EFFECTIVE_BALANCE);
+  for (let i = 1; i < state.slashings.length; i++) {
+    state.slashings.set(i, MAX_EFFECTIVE_BALANCE);
+  }
+  state.commit();
 
-  epochProcess.indicesToSlash = linspace(indicesToSlashLen);
+  cache.indicesToSlash = linspace(indicesToSlashLen);
 
   return {
     state,
-    epochProcess,
+    cache,
   };
 }
 

@@ -1,17 +1,18 @@
 import fs from "node:fs";
-import {Context} from "mocha";
+import {describe, it, afterAll, afterEach, vi} from "vitest";
 import {fromHexString} from "@chainsafe/ssz";
 import {isExecutionStateType, isMergeTransitionComplete} from "@lodestar/state-transition";
-import {LogLevel, sleep, TimestampFormatCode} from "@lodestar/utils";
+import {LogLevel, sleep} from "@lodestar/utils";
+import {TimestampFormatCode} from "@lodestar/logger";
 import {ForkName, SLOTS_PER_EPOCH} from "@lodestar/params";
 import {ChainConfig} from "@lodestar/config";
 import {routes} from "@lodestar/api";
 import {Epoch} from "@lodestar/types";
 import {ValidatorProposerConfig} from "@lodestar/validator";
 
-import {ExecutePayloadStatus, PayloadAttributes} from "../../src/execution/engine/interface.js";
+import {ExecutionPayloadStatus, PayloadAttributes} from "../../src/execution/engine/interface.js";
 import {initializeExecutionEngine} from "../../src/execution/index.js";
-import {ChainEvent} from "../../src/chain/index.js";
+import {ClockEvent} from "../../src/util/clock.js";
 import {testLogger, TestLoggerOpts} from "../utils/logger.js";
 import {getDevBeaconNode} from "../utils/node/beacon.js";
 import {BeaconRestApiServerOpts} from "../../src/api/index.js";
@@ -38,7 +39,7 @@ import {shell} from "./shell.js";
 // ```
 // $ EL_BINARY_DIR=/home/lion/Code/eth2.0/merge-interop/go-ethereum/build/bin \
 //   EL_SCRIPT_DIR=geth ETH_PORT=8545 ENGINE_PORT=8551 TX_SCENARIOS=simple \
-//   ../../node_modules/.bin/mocha test/sim/merge.test.ts
+//   ../../node_modules/.bin/vitest --run test/sim/merge.test.ts
 // ```
 
 /* eslint-disable no-console, @typescript-eslint/naming-convention, quotes */
@@ -57,7 +58,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
       `EL ENV must be provided, EL_BINARY_DIR: ${process.env.EL_BINARY_DIR}, EL_SCRIPT_DIR: ${process.env.EL_SCRIPT_DIR}`
     );
   }
-  this.timeout("10min");
+  vi.setConfig({testTimeout: 10 * 60 * 1000});
 
   const dataPath = fs.mkdtempSync("lodestar-test-merge-interop");
   const elSetupConfig = {
@@ -72,7 +73,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
   };
 
   const controller = new AbortController();
-  after(async () => {
+  afterAll(async () => {
     controller?.abort();
     await shell(`sudo rm -rf ${dataPath}`);
   });
@@ -85,6 +86,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     }
   });
 
+  // eslint-disable-next-line vitest/expect-expect
   it("Send stub payloads to EL", async () => {
     const {elClient, tearDownCallBack} = await runEL(
       {...elSetupConfig, mode: ELStartMode.PostMerge},
@@ -110,7 +112,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     //const controller = new AbortController();
     const executionEngine = initializeExecutionEngine(
       {mode: "http", urls: [engineRpcUrl], jwtSecretHex, retryAttempts, retryDelay},
-      {signal: controller.signal}
+      {signal: controller.signal, logger: testLogger("Node-A-Engine")}
     );
 
     // 1. Prepare a payload
@@ -158,7 +160,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
      **/
 
     const payloadResult = await executionEngine.notifyNewPayload(ForkName.bellatrix, payload);
-    if (payloadResult.status !== ExecutePayloadStatus.VALID) {
+    if (payloadResult.status !== ExecutionPayloadStatus.VALID) {
       throw Error("getPayload returned payload that notifyNewPayload deems invalid");
     }
 
@@ -201,6 +203,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
      */
   });
 
+  // eslint-disable-next-line vitest/expect-expect
   it("Post-merge, run for a few blocks", async function () {
     console.log("\n\nPost-merge, run for a few blocks\n\n");
     const {elClient, tearDownCallBack} = await runEL(
@@ -210,13 +213,14 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     );
     afterEachCallbacks.push(() => tearDownCallBack());
 
-    await runNodeWithEL.bind(this)({
+    await runNodeWithEL({
       elClient,
       bellatrixEpoch: 0,
       testName: "post-merge",
     });
   });
 
+  // eslint-disable-next-line vitest/expect-expect
   it("Pre-merge, run for a few blocks", async function () {
     console.log("\n\nPre-merge, run for a few blocks\n\n");
     const {elClient, tearDownCallBack} = await runEL(
@@ -226,17 +230,22 @@ describe("executionEngine / ExecutionEngineHttp", function () {
     );
     afterEachCallbacks.push(() => tearDownCallBack());
 
-    await runNodeWithEL.bind(this)({
+    await runNodeWithEL({
       elClient,
       bellatrixEpoch: 1,
       testName: "pre-merge",
     });
   });
 
-  async function runNodeWithEL(
-    this: Context,
-    {elClient, bellatrixEpoch, testName}: {elClient: ELClient; bellatrixEpoch: Epoch; testName: string}
-  ): Promise<void> {
+  async function runNodeWithEL({
+    elClient,
+    bellatrixEpoch,
+    testName,
+  }: {
+    elClient: ELClient;
+    bellatrixEpoch: Epoch;
+    testName: string;
+  }): Promise<void> {
     const {genesisBlockHash, ttd, engineRpcUrl, ethRpcUrl} = elClient;
     const validatorClientCount = 1;
     const validatorsPerClient = 32;
@@ -260,13 +269,16 @@ describe("executionEngine / ExecutionEngineHttp", function () {
       testParams.SECONDS_PER_SLOT *
       1000;
 
-    this.timeout(timeout + 2 * timeoutSetupMargin);
+    vi.setConfig({testTimeout: timeout + 2 * timeoutSetupMargin});
 
     const genesisTime = Math.floor(Date.now() / 1000) + genesisSlotsDelay * testParams.SECONDS_PER_SLOT;
 
     const testLoggerOpts: TestLoggerOpts = {
-      logLevel: LogLevel.info,
-      logFile: `${logFilesDir}/merge-interop-${testName}.log`,
+      level: LogLevel.info,
+      file: {
+        filepath: `${logFilesDir}/merge-interop-${testName}.log`,
+        level: LogLevel.debug,
+      },
       timestampFormat: {
         format: TimestampFormatCode.EpochSlot,
         genesisTime,
@@ -311,14 +323,13 @@ describe("executionEngine / ExecutionEngineHttp", function () {
           strictFeeRecipientCheck: true,
           feeRecipient: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           builder: {
-            enabled: false,
             gasLimit: 30000000,
+            builderSelection: "executiononly",
           },
         },
         "0xa4855c83d868f772a579133d9f23818008417b743e8447e235d8eb78b1d8f8a9f63f98c551beb7de254400f89592314d": {
           feeRecipient: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           builder: {
-            enabled: true,
             gasLimit: 35000000,
           },
         },
@@ -328,13 +339,13 @@ describe("executionEngine / ExecutionEngineHttp", function () {
         strictFeeRecipientCheck: true,
         feeRecipient: "0xcccccccccccccccccccccccccccccccccccccccc",
         builder: {
-          enabled: false,
           gasLimit: 30000000,
         },
       },
     } as ValidatorProposerConfig;
 
     const {validators} = await getAndInitDevValidators({
+      logPrefix: "Node-A",
       node: bn,
       validatorsPerClient,
       validatorClientCount,
@@ -362,7 +373,7 @@ describe("executionEngine / ExecutionEngineHttp", function () {
 
     await new Promise<void>((resolve, reject) => {
       // Play TX_SCENARIOS
-      bn.chain.emitter.on(ChainEvent.clockSlot, async (slot) => {
+      bn.chain.clock.on(ClockEvent.slot, async (slot) => {
         if (slot < 2) return;
         switch (slot) {
           // If bellatrixEpoch > 0, this is the case of pre-merge transaction confirmation on EL pow

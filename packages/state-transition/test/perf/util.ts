@@ -1,8 +1,8 @@
-import {config} from "@lodestar/config/default";
-import {allForks, phase0, ssz, Slot, altair} from "@lodestar/types";
 import {CoordType, PublicKey, SecretKey} from "@chainsafe/bls/types";
 import bls from "@chainsafe/bls";
 import {BitArray, fromHexString} from "@chainsafe/ssz";
+import {allForks, phase0, ssz, Slot, altair} from "@lodestar/types";
+import {config} from "@lodestar/config/default";
 import {createBeaconConfig, createChainForkConfig} from "@lodestar/config";
 import {
   EPOCHS_PER_ETH1_VOTING_PERIOD,
@@ -28,7 +28,6 @@ import {
   BeaconStatePhase0,
   BeaconStateAltair,
 } from "../../src/types.js";
-import {profilerLogger} from "../utils/logger.js";
 import {interopPubkeysCached} from "../utils/interop.js";
 import {getNextSyncCommittee} from "../../src/util/syncCommittee.js";
 import {getEffectiveBalanceIncrements} from "../../src/cache/effectiveBalanceIncrements.js";
@@ -41,7 +40,6 @@ let phase0SignedBlock: phase0.SignedBeaconBlock | null = null;
 let altairState: BeaconStateAltair | null = null;
 let altairCachedState23637: CachedBeaconStateAltair | null = null;
 let altairCachedState23638: CachedBeaconStateAltair | null = null;
-const logger = profilerLogger();
 
 /**
  * Number of validators in prater is 210000 as of May 2021
@@ -119,10 +117,6 @@ export function generatePerfTestCachedStatePhase0(opts?: {goBackOneSlot: boolean
 
     // no justificationBits
     phase0State = ssz.phase0.BeaconState.toViewDU(state);
-    logger.verbose("Loaded phase0 state", {
-      slot: state.slot,
-      numValidators: state.validators.length,
-    });
 
     // cache roots
     phase0State.hashTreeRoot();
@@ -217,8 +211,15 @@ export function cachedStateAltairPopulateCaches(state: CachedBeaconStateAltair):
   state.inactivityScores.getAll();
 }
 
-export function generatePerfTestCachedStateAltair(opts?: {goBackOneSlot: boolean}): CachedBeaconStateAltair {
-  const {pubkeys, pubkeysMod, pubkeysModObj} = getPubkeys();
+/**
+ * Warning: This function has side effects on the cached state
+ * The order in which the caches are populated is important and can cause stable tests to fail.
+ */
+export function generatePerfTestCachedStateAltair(opts?: {
+  goBackOneSlot: boolean;
+  vc?: number;
+}): CachedBeaconStateAltair {
+  const {pubkeys, pubkeysMod, pubkeysModObj} = getPubkeys(opts?.vc);
   const {pubkey2index, index2pubkey} = getPubkeyCaches({pubkeys, pubkeysMod, pubkeysModObj});
 
   // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -253,7 +254,7 @@ export function generatePerfTestCachedStateAltair(opts?: {goBackOneSlot: boolean
 export function generatePerformanceStateAltair(pubkeysArg?: Uint8Array[]): BeaconStateAltair {
   if (!altairState) {
     const pubkeys = pubkeysArg || getPubkeys().pubkeys;
-    const statePhase0 = buildPerformanceStatePhase0();
+    const statePhase0 = buildPerformanceStatePhase0(pubkeys);
     const state = statePhase0 as allForks.BeaconState as altair.BeaconState;
 
     state.previousEpochParticipation = newFilledArray(pubkeys.length, 0b111);
@@ -277,10 +278,6 @@ export function generatePerformanceStateAltair(pubkeysArg?: Uint8Array[]): Beaco
     state.nextSyncCommittee = syncCommittee;
 
     altairState = ssz.altair.BeaconState.toViewDU(state);
-    logger.verbose("Loaded phase0 state", {
-      slot: altairState.slot,
-      numValidators: altairState.validators.length,
-    });
     // cache roots
     altairState.hashTreeRoot();
   }
@@ -303,7 +300,6 @@ export function generatePerformanceBlockPhase0(): phase0.SignedBeaconBlock {
     );
     // eth1Data, graffiti, attestations
     phase0SignedBlock = block;
-    logger.verbose("Loaded block", {slot: phase0SignedBlock.message.slot});
   }
 
   return phase0SignedBlock;
@@ -435,9 +431,13 @@ export function generateTestCachedBeaconStateOnlyValidators({
     throw Error(`Wrong number of validators in the state: ${state.validators.length} !== ${vc}`);
   }
 
-  return createCachedBeaconState(state, {
-    config: createBeaconConfig(config, state.genesisValidatorsRoot),
-    pubkey2index,
-    index2pubkey,
-  });
+  return createCachedBeaconState(
+    state,
+    {
+      config: createBeaconConfig(config, state.genesisValidatorsRoot),
+      pubkey2index,
+      index2pubkey,
+    },
+    {skipSyncPubkeys: true}
+  );
 }

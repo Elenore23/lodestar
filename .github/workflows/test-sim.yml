@@ -1,16 +1,31 @@
 name: Sim tests
 
+concurrency:
+  # If PR, cancel prev commits. head_ref = source branch name on pull_request, null if push
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 on:
   push:
     # We intentionally don't run push on feature branches. See PR for rational.
     branches: [unstable, stable]
   pull_request:
   workflow_dispatch:
+    inputs:
+      debug:
+        description: Runtime DEBUG value
+        required: false
+        default: ""
+      genesisDelaySlots:
+        description: 'Number of slots delay before genesis'
+        required: true
+        type: number
+        default: 40
 
 env:
-  GETH_DOCKER_IMAGE: ethereum/client-go:v1.10.25
-  LIGHTHOUSE_DOCKER_IMAGE: sigp/lighthouse:latest-amd64-unstable-dev
-  NETHERMIND_DOCKER_IMAGE: nethermind/nethermind:1.14.5
+  GETH_DOCKER_IMAGE: ethereum/client-go:v1.11.6
+  LIGHTHOUSE_DOCKER_IMAGE: sigp/lighthouse:latest-amd64-modern-dev
+  NETHERMIND_DOCKER_IMAGE: nethermind/nethermind:1.18.0
 
 jobs:
   tests-sim:
@@ -21,7 +36,9 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
         with:
-          node-version: 18
+          node-version: 20
+          check-latest: true
+          cache: yarn          
       - name: Node.js version
         id: node
         run: echo "v8CppApiVersion=$(node --print "process.versions.modules")" >> $GITHUB_OUTPUT
@@ -42,8 +59,10 @@ jobs:
       # </common-build>
 
       - name: Sim tests multifork
-        run: yarn test:sim:multifork
+        run: DEBUG='${{github.event.inputs.debug}}' yarn test:sim:multifork
         working-directory: packages/cli
+        env: 
+          GENESIS_DELAY_SLOTS: ${{github.event.inputs.genesisDelaySlots}}
 
       - name: Sim tests endpoints
         run: yarn test:sim:endpoints
@@ -57,9 +76,13 @@ jobs:
         run: yarn test:sim:backup_eth_provider
         working-directory: packages/cli
 
+      - name: Sim tests mixed client
+        run: DEBUG='${{github.event.inputs.debug}}' yarn test:sim:mixedclient
+        working-directory: packages/cli
+
       - name: Upload debug log test files for "packages/cli"
         if: ${{ always() }}
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: debug-test-logs-cli
           path: packages/cli/test-logs

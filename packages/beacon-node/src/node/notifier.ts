@@ -33,14 +33,16 @@ export async function runNodeNotifier(modules: NodeNotifierModules): Promise<voi
   const tdTimeSeries = new TimeSeries({maxPoints: 50});
 
   const SLOTS_PER_SYNC_COMMITTEE_PERIOD = SLOTS_PER_EPOCH * EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
-  let hasLowPeerCount = false; // Only log once
+  let hasLowPeerCount = false;
+  let isFirstTime = true;
 
   try {
     while (!signal.aborted) {
       const connectedPeerCount = network.getConnectedPeerCount();
 
       if (connectedPeerCount <= WARN_PEER_COUNT) {
-        if (!hasLowPeerCount) {
+        // Only log once and prevent peer count warning on startup
+        if (!hasLowPeerCount && !isFirstTime) {
           logger.warn("Low peer count", {peers: connectedPeerCount});
           hasLowPeerCount = true;
         }
@@ -131,7 +133,8 @@ export async function runNodeNotifier(modules: NodeNotifierModules): Promise<voi
       }
 
       // Log halfway through each slot
-      await sleep(timeToNextHalfSlot(config, chain), signal);
+      await sleep(timeToNextHalfSlot(config, chain, isFirstTime), signal);
+      isFirstTime = false;
     }
   } catch (e) {
     if (e instanceof ErrorAborted) {
@@ -142,11 +145,23 @@ export async function runNodeNotifier(modules: NodeNotifierModules): Promise<voi
   }
 }
 
-function timeToNextHalfSlot(config: BeaconConfig, chain: IBeaconChain): number {
+function timeToNextHalfSlot(config: BeaconConfig, chain: IBeaconChain, isFirstTime: boolean): number {
   const msPerSlot = config.SECONDS_PER_SLOT * 1000;
+  const msPerHalfSlot = msPerSlot / 2;
   const msFromGenesis = Date.now() - chain.genesisTime * 1000;
-  const msToNextSlot = msPerSlot - (msFromGenesis % msPerSlot);
-  return msToNextSlot > msPerSlot / 2 ? msToNextSlot - msPerSlot / 2 : msToNextSlot + msPerSlot / 2;
+  const msToNextSlot =
+    msFromGenesis < 0
+      ? // For future genesis time, calculate time left in the slot
+        -msFromGenesis % msPerSlot
+      : // For past genesis time, calculate time until the next slot
+        msPerSlot - (msFromGenesis % msPerSlot);
+  if (isFirstTime) {
+    // at the 1st time we may miss middle of the current clock slot
+    return msToNextSlot > msPerHalfSlot ? msToNextSlot - msPerHalfSlot : msToNextSlot + msPerHalfSlot;
+  } else {
+    // after the 1st time always wait until middle of next clock slot
+    return msToNextSlot + msPerHalfSlot;
+  }
 }
 
 function getHeadExecutionInfo(

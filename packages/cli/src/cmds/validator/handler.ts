@@ -6,13 +6,20 @@ import {
   SlashingProtection,
   Validator,
   ValidatorProposerConfig,
-  BuilderSelection,
+  defaultOptions,
 } from "@lodestar/validator";
-import {getMetrics, MetricsRegister} from "@lodestar/validator";
-import {RegistryMetricCreator, collectNodeJSMetrics, HttpMetricsServer, MonitoringService} from "@lodestar/beacon-node";
+import {routes} from "@lodestar/api";
+import {getMetrics} from "@lodestar/validator";
+import {
+  RegistryMetricCreator,
+  collectNodeJSMetrics,
+  getHttpMetricsServer,
+  MonitoringService,
+} from "@lodestar/beacon-node";
+import {getNodeLogger} from "@lodestar/logger/node";
 import {getBeaconConfigFromArgs} from "../../config/index.js";
 import {GlobalArgs} from "../../options/index.js";
-import {YargsError, getDefaultGraffiti, mkdir, getCliLogger, cleanOldLogFiles} from "../../util/index.js";
+import {YargsError, cleanOldLogFiles, getDefaultGraffiti, mkdir, parseLoggerArgs} from "../../util/index.js";
 import {onGracefulShutdown, parseFeeRecipient, parseProposerConfig} from "../../util/index.js";
 import {getVersionData} from "../../util/version.js";
 import {getAccountPaths, getValidatorPaths} from "./paths.js";
@@ -30,20 +37,17 @@ import {KeymanagerRestApiServer} from "./keymanager/server.js";
 export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Promise<void> {
   const {config, network} = getBeaconConfigFromArgs(args);
 
-  const doppelgangerProtectionEnabled = args.doppelgangerProtectionEnabled;
+  const {doppelgangerProtection} = args;
 
   const validatorPaths = getValidatorPaths(args, network);
   const accountPaths = getAccountPaths(args, network);
 
-  const {logger, logParams} = getCliLogger(
-    args,
-    {defaultLogFilepath: path.join(validatorPaths.dataDir, "validator.log")},
-    config
-  );
+  const defaultLogFilepath = path.join(validatorPaths.dataDir, "validator.log");
+  const logger = getNodeLogger(parseLoggerArgs(args, {defaultLogFilepath}, config));
   try {
-    cleanOldLogFiles(logParams.filename, logParams.rotateMaxFiles);
+    cleanOldLogFiles(args, {defaultLogFilepath});
   } catch (e) {
-    logger.debug("Not able to delete log files", logParams, e as Error);
+    logger.debug("Not able to delete log files", {}, e as Error);
   }
 
   const persistedKeysBackend = new PersistedKeysBackend(accountPaths);
@@ -71,6 +75,13 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
   // This AbortController interrupts various validators ops: genesis req, clients call, clock etc
   const abortController = new AbortController();
 
+  // We set infinity for abort controller used for validator operations,
+  // to prevent MaxListenersExceededWarning which get logged when listeners > 10
+  // Since it is perfectly fine to have listeners > 10
+  setMaxListeners(Infinity, abortController.signal);
+
+  onGracefulShutdownCbs.push(async () => abortController.abort());
+
   /**
    * For rationale and documentation of how signers are loaded from args and disk,
    * see {@link PersistedKeysBackend} and {@link getSignersFromArgs}
@@ -92,42 +103,31 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
 
   logSigners(logger, signers);
 
-  // We set infinity for abort controller used for validator operations,
-  // to prevent MaxListenersExceededWarning which get logged when listeners > 10
-  // Since it is perfectly fine to have listeners > 10
-  setMaxListeners(Infinity, abortController.signal);
+  const db = await LevelDbController.create({name: dbPath}, {metrics: null, logger});
+  onGracefulShutdownCbs.push(() => db.close());
 
-  onGracefulShutdownCbs.push(async () => abortController.abort());
-
-  const dbOps = {
-    config,
-    controller: new LevelDbController({name: dbPath}, {metrics: null, logger}),
-  };
-  onGracefulShutdownCbs.push(() => dbOps.controller.stop());
-  await dbOps.controller.start();
-
-  const slashingProtection = new SlashingProtection(dbOps);
+  const slashingProtection = new SlashingProtection(db);
 
   // Create metrics registry if metrics are enabled or monitoring endpoint is configured
   // Send version and network data for static registries
 
   const register = args["metrics"] || args["monitoring.endpoint"] ? new RegistryMetricCreator() : null;
-  const metrics = register && getMetrics(register as unknown as MetricsRegister, {version, commit, network});
+  const metrics = register && getMetrics(register, {version, commit, network});
 
   // Start metrics server if metrics are enabled.
   // Collect NodeJS metrics defined in the Lodestar repo
 
   if (metrics) {
-    collectNodeJSMetrics(register);
+    const closeMetrics = collectNodeJSMetrics(register);
+    onGracefulShutdownCbs.push(() => closeMetrics());
 
     // only start server if metrics are explicitly enabled
     if (args["metrics"]) {
       const port = args["metrics.port"] ?? validatorMetricsDefaultOptions.port;
       const address = args["metrics.address"] ?? validatorMetricsDefaultOptions.address;
-      const metricsServer = new HttpMetricsServer({port, address}, {register, logger});
+      const metricsServer = await getHttpMetricsServer({port, address}, {register, logger});
 
-      onGracefulShutdownCbs.push(() => metricsServer.stop());
-      await metricsServer.start();
+      onGracefulShutdownCbs.push(() => metricsServer.close());
     }
   }
 
@@ -146,8 +146,7 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
       {register: register as RegistryMetricCreator, logger}
     );
 
-    onGracefulShutdownCbs.push(() => monitoring.stop());
-    monitoring.start();
+    onGracefulShutdownCbs.push(() => monitoring.close());
   }
 
   // This promise resolves once genesis is available.
@@ -155,19 +154,23 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
 
   const validator = await Validator.initializeFromBeaconNode(
     {
-      dbOps,
+      db,
+      config,
       slashingProtection,
       api: args.beaconNodes,
       logger,
       processShutdownCallback,
       signers,
       abortController,
-      doppelgangerProtectionEnabled,
+      doppelgangerProtection,
       afterBlockDelaySlotFraction: args.afterBlockDelaySlotFraction,
       scAfterBlockDelaySlotFraction: args.scAfterBlockDelaySlotFraction,
       disableAttestationGrouping: args.disableAttestationGrouping,
       valProposerConfig,
       distributed: args.distributed,
+      useProduceBlockV3: args.useProduceBlockV3,
+      broadcastValidation: parseBroadcastValidation(args.broadcastValidation),
+      blindedLocal: args.blindedLocal,
     },
     metrics
   );
@@ -185,13 +188,19 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
       );
     }
 
-    const keymanagerApi = new KeymanagerApi(validator, persistedKeysBackend, proposerConfigWriteDisabled);
+    const keymanagerApi = new KeymanagerApi(
+      validator,
+      persistedKeysBackend,
+      abortController.signal,
+      proposerConfigWriteDisabled
+    );
     const keymanagerServer = new KeymanagerRestApiServer(
       {
         address: args["keymanager.address"],
         port: args["keymanager.port"],
         cors: args["keymanager.cors"],
         isAuthEnabled: args["keymanager.authEnabled"],
+        headerLimit: args["keymanager.headerLimit"],
         bodyLimit: args["keymanager.bodyLimit"],
         tokenDir: dbPath,
       },
@@ -214,9 +223,11 @@ function getProposerConfigFromArgs(
     strictFeeRecipientCheck: args.strictFeeRecipientCheck,
     feeRecipient: args.suggestedFeeRecipient ? parseFeeRecipient(args.suggestedFeeRecipient) : undefined,
     builder: {
-      enabled: args.builder,
       gasLimit: args.defaultGasLimit,
-      selection: parseBuilderSelection(args["builder.selection"]),
+      selection: parseBuilderSelection(
+        args["builder.selection"] ?? (args["builder"] ? defaultOptions.builderAliasSelection : undefined)
+      ),
+      boostFactor: parseBuilderBoostFactor(args["builder.boostFactor"]),
     },
   };
 
@@ -243,16 +254,45 @@ function getProposerConfigFromArgs(
   return valProposerConfig;
 }
 
-function parseBuilderSelection(builderSelection?: string): BuilderSelection | undefined {
+function parseBuilderSelection(builderSelection?: string): routes.validator.BuilderSelection | undefined {
   if (builderSelection) {
     switch (builderSelection) {
       case "maxprofit":
         break;
       case "builderalways":
         break;
+      case "builderonly":
+        break;
+      case "executiononly":
+        break;
       default:
-        throw Error("Invalid input for builder selection, check help.");
+        throw new YargsError("Invalid input for builder selection, check help");
     }
   }
-  return builderSelection as BuilderSelection;
+  return builderSelection as routes.validator.BuilderSelection;
+}
+
+function parseBroadcastValidation(broadcastValidation?: string): routes.beacon.BroadcastValidation | undefined {
+  if (broadcastValidation) {
+    switch (broadcastValidation) {
+      case "gossip":
+      case "consensus":
+      case "consensus_and_equivocation":
+        break;
+      default:
+        throw new YargsError("Invalid input for broadcastValidation, check help");
+    }
+  }
+
+  return broadcastValidation as routes.beacon.BroadcastValidation;
+}
+
+function parseBuilderBoostFactor(boostFactor?: string): bigint | undefined {
+  if (boostFactor === undefined) return;
+
+  if (!/^\d+$/.test(boostFactor)) {
+    throw new YargsError("Invalid input for builder boost factor, must be a valid number without decimals");
+  }
+
+  return BigInt(boostFactor);
 }

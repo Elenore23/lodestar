@@ -1,5 +1,5 @@
-import {ssz} from "@lodestar/types";
 import {toHexString} from "@chainsafe/ssz";
+import {ssz} from "@lodestar/types";
 import {ForkName} from "@lodestar/params";
 import {Api} from "../../../../src/beacon/routes/lightclient.js";
 import {GenericServerTestCases} from "../../../utils/genericServerTest.js";
@@ -46,6 +46,6 @@ export const testData: GenericServerTestCases<Api> = {
   },
   getCommitteeRoot: {
     args: [1, 2],
-    res: {data: [Buffer.alloc(32, 0), Buffer.alloc(32, 1)]},
+    res: {data: [Uint8Array.from(Buffer.alloc(32, 0)), Uint8Array.from(Buffer.alloc(32, 1))]},
   },
 };

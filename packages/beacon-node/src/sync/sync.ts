@@ -1,12 +1,13 @@
-import {PeerId} from "@libp2p/interface-peer-id";
 import {Logger} from "@lodestar/utils";
 import {SLOTS_PER_EPOCH} from "@lodestar/params";
-import {Slot, phase0} from "@lodestar/types";
-import {INetwork, NetworkEvent} from "../network/index.js";
+import {Slot} from "@lodestar/types";
+import {INetwork, NetworkEvent, NetworkEventData} from "../network/index.js";
 import {isOptimisticBlock} from "../util/forkChoice.js";
 import {Metrics} from "../metrics/index.js";
-import {ChainEvent, IBeaconChain} from "../chain/index.js";
+import {IBeaconChain} from "../chain/index.js";
+import {ClockEvent} from "../util/clock.js";
 import {GENESIS_SLOT} from "../constants/constants.js";
+import {ExecutionEngineState} from "../execution/index.js";
 import {IBeaconSync, SyncModules, SyncingStatus} from "./interface.js";
 import {RangeSync, RangeSyncStatus, RangeSyncEvent} from "./range/range.js";
 import {getPeerSyncType, PeerSyncType, peerSyncTypes} from "./utils/remoteSyncType.js";
@@ -27,15 +28,6 @@ export class BeaconSync implements IBeaconSync {
 
   /** For metrics only */
   private readonly peerSyncType = new Map<string, PeerSyncType>();
-
-  /**
-   * The number of slots ahead of us that is allowed before starting a RangeSync
-   * If a peer is within this tolerance (forwards or backwards), it is treated as a fully sync'd peer.
-   *
-   * This means that we consider ourselves synced (and hence subscribe to all subnets and block
-   * gossip if no peers are further than this range ahead of us that we have not already downloaded
-   * blocks for.
-   */
   private readonly slotImportTolerance: Slot;
 
   constructor(opts: SyncOptions, modules: SyncModules) {
@@ -47,20 +39,39 @@ export class BeaconSync implements IBeaconSync {
     this.logger = logger;
     this.rangeSync = new RangeSync(modules, opts);
     this.unknownBlockSync = new UnknownBlockSync(config, network, chain, logger, metrics, opts);
-    this.slotImportTolerance = SLOTS_PER_EPOCH;
+    this.slotImportTolerance = opts.slotImportTolerance ?? SLOTS_PER_EPOCH;
 
     // Subscribe to RangeSync completing a SyncChain and recompute sync state
     if (!opts.disableRangeSync) {
+      // prod code
       this.logger.debug("RangeSync enabled.");
       this.rangeSync.on(RangeSyncEvent.completedChain, this.updateSyncState);
       this.network.events.on(NetworkEvent.peerConnected, this.addPeer);
       this.network.events.on(NetworkEvent.peerDisconnected, this.removePeer);
+      this.chain.clock.on(ClockEvent.epoch, this.onClockEpoch);
     } else {
+      // test code, this is needed for Unknown block sync sim test
+      this.unknownBlockSync.subscribeToNetwork();
       this.logger.debug("RangeSync disabled.");
-    }
 
-    // TODO: It's okay to start this on initial sync?
-    this.chain.emitter.on(ChainEvent.clockEpoch, this.onClockEpoch);
+      // In case node is started with `rangeSync` disabled and `unknownBlockSync` is enabled.
+      // If the epoch boundary happens right away the `onClockEpoch` will check for the `syncDiff` and if
+      // it's more than 2 epoch will disable the disabling the `unknownBlockSync` as well.
+      // This will result into node hanging on the head slot and not syncing any blocks.
+      // This was the scenario in the test case `Unknown block sync` in `packages/cli/test/sim/multi_fork.test.ts`
+      // So we are adding a particular delay to ensure that the `unknownBlockSync` is enabled.
+      const syncStartSlot = this.chain.clock.currentSlot;
+      // Having one epoch time for the node to connect to peers and start a syncing process
+      const epochCheckForSyncSlot = syncStartSlot + SLOTS_PER_EPOCH;
+      const initiateEpochCheckForSync = (): void => {
+        if (this.chain.clock.currentSlot > epochCheckForSyncSlot) {
+          this.logger.info("Initiating epoch check for sync progress");
+          this.chain.clock.off(ClockEvent.slot, initiateEpochCheckForSync);
+          this.chain.clock.on(ClockEvent.epoch, this.onClockEpoch);
+        }
+      };
+      this.chain.clock.on(ClockEvent.slot, initiateEpochCheckForSync);
+    }
 
     if (metrics) {
       metrics.syncStatus.addCollect(() => this.scrapeMetrics(metrics));
@@ -70,13 +81,15 @@ export class BeaconSync implements IBeaconSync {
   close(): void {
     this.network.events.off(NetworkEvent.peerConnected, this.addPeer);
     this.network.events.off(NetworkEvent.peerDisconnected, this.removePeer);
-    this.chain.emitter.off(ChainEvent.clockEpoch, this.onClockEpoch);
+    this.chain.clock.off(ClockEvent.epoch, this.onClockEpoch);
     this.rangeSync.close();
     this.unknownBlockSync.close();
   }
 
   getSyncStatus(): SyncingStatus {
     const currentSlot = this.chain.clock.currentSlot;
+    const elOffline = this.chain.executionEngine.getState() === ExecutionEngineState.OFFLINE;
+
     // If we are pre/at genesis, signal ready
     if (currentSlot <= GENESIS_SLOT) {
       return {
@@ -84,6 +97,7 @@ export class BeaconSync implements IBeaconSync {
         syncDistance: "0",
         isSyncing: false,
         isOptimistic: false,
+        elOffline,
       };
     } else {
       const head = this.chain.forkChoice.getHead();
@@ -97,6 +111,7 @@ export class BeaconSync implements IBeaconSync {
             syncDistance: String(currentSlot - head.slot),
             isSyncing: true,
             isOptimistic: isOptimisticBlock(head),
+            elOffline,
           };
         case SyncState.Synced:
           return {
@@ -104,6 +119,7 @@ export class BeaconSync implements IBeaconSync {
             syncDistance: "0",
             isSyncing: false,
             isOptimistic: isOptimisticBlock(head),
+            elOffline,
           };
         default:
           throw new Error("Node is stopped, cannot get sync status");
@@ -166,15 +182,15 @@ export class BeaconSync implements IBeaconSync {
    * If the peer is within the `SLOT_IMPORT_TOLERANCE`, then it's head is sufficiently close to
    * ours that we consider it fully sync'd with respect to our current chain.
    */
-  private addPeer = (peerId: PeerId, peerStatus: phase0.Status): void => {
+  private addPeer = (data: NetworkEventData[NetworkEvent.peerConnected]): void => {
     const localStatus = this.chain.getStatus();
-    const syncType = getPeerSyncType(localStatus, peerStatus, this.chain.forkChoice, this.slotImportTolerance);
+    const syncType = getPeerSyncType(localStatus, data.status, this.chain.forkChoice, this.slotImportTolerance);
 
     // For metrics only
-    this.peerSyncType.set(peerId.toString(), syncType);
+    this.peerSyncType.set(data.peer.toString(), syncType);
 
     if (syncType === PeerSyncType.Advanced) {
-      this.rangeSync.addPeer(peerId, localStatus, peerStatus);
+      this.rangeSync.addPeer(data.peer, localStatus, data.status);
     }
 
     this.updateSyncState();
@@ -183,10 +199,10 @@ export class BeaconSync implements IBeaconSync {
   /**
    * Must be called by libp2p when a peer is removed from the peer manager
    */
-  private removePeer = (peerId: PeerId): void => {
-    this.rangeSync.removePeer(peerId);
+  private removePeer = (data: NetworkEventData[NetworkEvent.peerDisconnected]): void => {
+    this.rangeSync.removePeer(data.peer);
 
-    this.peerSyncType.delete(peerId.toString());
+    this.peerSyncType.delete(data.peer.toString());
   };
 
   /**
@@ -196,36 +212,48 @@ export class BeaconSync implements IBeaconSync {
     const state = this.state; // Don't run the getter twice
 
     // We have become synced, subscribe to all the gossip core topics
-    if (
-      state === SyncState.Synced &&
-      !this.network.isSubscribedToGossipCoreTopics() &&
-      this.chain.clock.currentEpoch >= MIN_EPOCH_TO_START_GOSSIP
-    ) {
-      this.network
-        .subscribeGossipCoreTopics()
-        .then(() => {
-          this.metrics?.syncSwitchGossipSubscriptions.inc({action: "subscribed"});
-          this.logger.info("Subscribed gossip core topics");
-        })
-        .catch((e) => {
-          this.logger.error("Error subscribing to gossip core topics", {}, e);
-        });
-    }
-
-    // If we stopped being synced and falled significantly behind, stop gossip
-    else if (state !== SyncState.Synced && this.network.isSubscribedToGossipCoreTopics()) {
-      const syncDiff = this.chain.clock.currentSlot - this.chain.forkChoice.getHead().slot;
-      if (syncDiff > this.slotImportTolerance * 2) {
-        this.logger.warn(`Node sync has fallen behind by ${syncDiff} slots`);
+    if (state === SyncState.Synced && this.chain.clock.currentEpoch >= MIN_EPOCH_TO_START_GOSSIP) {
+      if (!this.network.isSubscribedToGossipCoreTopics()) {
         this.network
-          .unsubscribeGossipCoreTopics()
+          .subscribeGossipCoreTopics()
           .then(() => {
-            this.metrics?.syncSwitchGossipSubscriptions.inc({action: "unsubscribed"});
-            this.logger.info("Un-subscribed gossip core topics");
+            this.metrics?.syncSwitchGossipSubscriptions.inc({action: "subscribed"});
+            this.logger.info("Subscribed gossip core topics");
           })
           .catch((e) => {
-            this.logger.error("Error unsubscribing to gossip core topics", {}, e);
+            this.logger.error("Error subscribing to gossip core topics", {}, e);
           });
+      }
+
+      // also start searching for unknown blocks
+      if (!this.unknownBlockSync.isSubscribedToNetwork()) {
+        this.unknownBlockSync.subscribeToNetwork();
+        this.metrics?.syncUnknownBlock.switchNetworkSubscriptions.inc({action: "subscribed"});
+      }
+    }
+
+    // If we stopped being synced and fallen significantly behind, stop gossip
+    else if (state !== SyncState.Synced) {
+      const syncDiff = this.chain.clock.currentSlot - this.chain.forkChoice.getHead().slot;
+      if (syncDiff > this.slotImportTolerance * 2) {
+        if (this.network.isSubscribedToGossipCoreTopics()) {
+          this.logger.warn(`Node sync has fallen behind by ${syncDiff} slots`);
+          this.network
+            .unsubscribeGossipCoreTopics()
+            .then(() => {
+              this.metrics?.syncSwitchGossipSubscriptions.inc({action: "unsubscribed"});
+              this.logger.info("Un-subscribed gossip core topics");
+            })
+            .catch((e) => {
+              this.logger.error("Error unsubscribing to gossip core topics", {}, e);
+            });
+        }
+
+        // also stop searching for unknown blocks
+        if (this.unknownBlockSync.isSubscribedToNetwork()) {
+          this.unknownBlockSync.unsubscribeFromNetwork();
+          this.metrics?.syncUnknownBlock.switchNetworkSubscriptions.inc({action: "unsubscribed"});
+        }
       }
     }
   };

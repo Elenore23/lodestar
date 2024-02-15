@@ -1,7 +1,7 @@
+import bls from "@chainsafe/bls";
+import type {PublicKey, Signature} from "@chainsafe/bls/types";
 import {Root, ssz, allForks} from "@lodestar/types";
 import {ChainForkConfig} from "@lodestar/config";
-import bls from "@chainsafe/bls/switchable";
-import type {PublicKey, Signature} from "@chainsafe/bls/types";
 import {
   FINALIZED_ROOT_INDEX,
   FINALIZED_ROOT_DEPTH,

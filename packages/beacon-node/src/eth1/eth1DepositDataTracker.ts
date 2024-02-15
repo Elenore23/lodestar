@@ -162,8 +162,7 @@ export class Eth1DepositDataTracker {
   private async runAutoUpdate(): Promise<void> {
     let lastRunMs = 0;
 
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
+    while (!this.signal.aborted) {
       lastRunMs = Date.now();
 
       try {
@@ -176,16 +175,16 @@ export class Eth1DepositDataTracker {
           await sleep(sleepTimeMs, this.signal);
         }
       } catch (e) {
+        this.metrics?.eth1.depositTrackerUpdateErrors.inc(1);
+
         // From Infura: 429 Too Many Requests
         if (e instanceof HttpRpcError && e.status === 429) {
           this.logger.debug("Eth1 provider rate limited", {}, e);
           await sleep(RATE_LIMITED_WAIT_MS, this.signal);
+          // only log error if state switched from online to some other state
         } else if (!isErrorAborted(e)) {
-          this.logger.error("Error updating eth1 chain cache", {}, e as Error);
           await sleep(MIN_WAIT_ON_ERROR_MS, this.signal);
         }
-
-        this.metrics?.eth1.depositTrackerUpdateErrors.inc(1);
       }
     }
   }

@@ -1,15 +1,15 @@
+import {toHexString} from "@chainsafe/ssz";
 import {ValidatorIndex} from "@lodestar/types";
 import {Logger, MapDef} from "@lodestar/utils";
-import {toHexString} from "@chainsafe/ssz";
 import {Api, ApiError, routes} from "@lodestar/api";
 import {batchItems} from "../util/index.js";
 import {Metrics} from "../metrics.js";
 
 /**
  * URLs have a limitation on size, adding an unbounded num of pubkeys will break the request.
- * For reasoning on the specific number see: https://github.com/ChainSafe/lodestar/pull/2730#issuecomment-866749083
+ * For reasoning on the specific number see: https://github.com/ethereum/beacon-APIs/pull/328
  */
-const PUBKEYS_PER_REQUEST = 10;
+const PUBKEYS_PER_REQUEST = 64;
 
 // To assist with readability
 type PubkeyHex = string;
@@ -46,7 +46,11 @@ export class IndicesService {
   // Request indices once
   private pollValidatorIndicesPromise: Promise<ValidatorIndex[]> | null = null;
 
-  constructor(private readonly logger: Logger, private readonly api: Api, private readonly metrics: Metrics | null) {
+  constructor(
+    private readonly logger: Logger,
+    private readonly api: Api,
+    private readonly metrics: Metrics | null
+  ) {
     if (metrics) {
       metrics.indices.addCollect(() => metrics.indices.set(this.index2pubkey.size));
     }
@@ -71,7 +75,7 @@ export class IndicesService {
     return this.index2pubkey.has(index);
   }
 
-  pollValidatorIndices(pubkeysHex: PubkeyHex[]): Promise<ValidatorIndex[]> {
+  async pollValidatorIndices(pubkeysHex: PubkeyHex[]): Promise<ValidatorIndex[]> {
     // Ensures pollValidatorIndicesInternal() is not called more than once at the same time.
     // AttestationDutiesService, SyncCommitteeDutiesService and DoppelgangerService will call this function at the same time, so this will
     // cache the promise and return it to the second caller, preventing calling the API twice for the same data.
@@ -81,6 +85,7 @@ export class IndicesService {
 
     this.pollValidatorIndicesPromise = this.pollValidatorIndicesInternal(pubkeysHex);
     // Once the pollValidatorIndicesInternal() resolves or rejects null the cached promise so it can be called again.
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     this.pollValidatorIndicesPromise.finally(() => {
       this.pollValidatorIndicesPromise = null;
     });
@@ -135,7 +140,7 @@ export class IndicesService {
 
       const pubkeyHex = toHexString(validatorState.validator.pubkey);
       if (!this.pubkey2index.has(pubkeyHex)) {
-        this.logger.info("Validator exists in beacon chain", {
+        this.logger.info("Validator seen on beacon chain", {
           validatorIndex: validatorState.index,
           pubKey: pubkeyHex,
         });

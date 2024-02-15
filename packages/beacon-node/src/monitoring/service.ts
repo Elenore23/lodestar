@@ -1,8 +1,7 @@
-import fetch from "cross-fetch";
 import {Registry} from "prom-client";
-import {ErrorAborted, Logger, TimeoutError} from "@lodestar/utils";
+import {fetch} from "@lodestar/api";
+import {ErrorAborted, Histogram, Logger, TimeoutError} from "@lodestar/utils";
 import {RegistryMetricCreator} from "../metrics/index.js";
-import {HistogramExtra} from "../metrics/utils/histogram.js";
 import {defaultMonitoringOptions, MonitoringOptions} from "./options.js";
 import {createClientStats} from "./clientStats.js";
 import {ClientStats} from "./types.js";
@@ -16,13 +15,18 @@ export type RemoteServiceError = {
 };
 
 enum FetchAbortReason {
-  Stop = "stop",
+  Close = "close",
   Timeout = "timeout",
 }
 
 enum Status {
   Started = "started",
-  Stopped = "stopped",
+  Closed = "closed",
+}
+
+enum SendDataStatus {
+  Success = "success",
+  Error = "error",
 }
 
 export type Client = "beacon" | "validator";
@@ -38,10 +42,10 @@ export class MonitoringService {
   private readonly register: Registry;
   private readonly logger: Logger;
 
-  private readonly collectDataMetric: HistogramExtra<string>;
-  private readonly sendDataMetric: HistogramExtra<"status">;
+  private readonly collectDataMetric: Histogram;
+  private readonly sendDataMetric: Histogram<{status: SendDataStatus}>;
 
-  private status = Status.Stopped;
+  private status = Status.Started;
   private initialDelayTimeout?: NodeJS.Timeout;
   private monitoringInterval?: NodeJS.Timeout;
   private fetchAbortController?: AbortController;
@@ -49,7 +53,7 @@ export class MonitoringService {
 
   constructor(
     client: Client,
-    options: MonitoringOptions,
+    options: Required<Pick<MonitoringOptions, "endpoint">> & MonitoringOptions,
     {register, logger}: {register: RegistryMetricCreator; logger: Logger}
   ) {
     this.options = {...defaultMonitoringOptions, ...options};
@@ -71,36 +75,26 @@ export class MonitoringService {
       labelNames: ["status"],
       buckets: [0.3, 0.5, 1, Math.floor(this.options.requestTimeout / 1000)],
     });
-  }
-
-  /**
-   * Start sending client stats based on configured interval
-   */
-  start(): void {
-    if (this.status === Status.Started) return;
-    this.status = Status.Started;
-
-    const {interval, initialDelay} = this.options;
 
     this.initialDelayTimeout = setTimeout(async () => {
       await this.send();
       this.nextMonitoringInterval();
-    }, initialDelay);
+    }, this.options.initialDelay);
 
     this.logger.info("Started monitoring service", {
       // do not log full URL as it may contain secrets
       remote: this.remoteServiceHost,
       machine: this.remoteServiceUrl.searchParams.get("machine"),
-      interval,
+      interval: this.options.interval,
     });
   }
 
   /**
    * Stop sending client stats
    */
-  stop(): void {
-    if (this.status === Status.Stopped) return;
-    this.status = Status.Stopped;
+  close(): void {
+    if (this.status === Status.Closed) return;
+    this.status = Status.Closed;
 
     if (this.initialDelayTimeout) {
       clearTimeout(this.initialDelayTimeout);
@@ -109,7 +103,7 @@ export class MonitoringService {
       clearTimeout(this.monitoringInterval);
     }
     if (this.pendingRequest) {
-      this.fetchAbortController?.abort(FetchAbortReason.Stop);
+      this.fetchAbortController?.abort(FetchAbortReason.Close);
     }
   }
 
@@ -195,21 +189,21 @@ export class MonitoringService {
       }
 
       // error was thrown by abort signal
-      if (signal.reason === FetchAbortReason.Stop) {
-        throw new ErrorAborted(`request to ${this.remoteServiceHost}`);
+      if (signal.reason === FetchAbortReason.Close) {
+        throw new ErrorAborted("request");
       } else if (signal.reason === FetchAbortReason.Timeout) {
-        throw new TimeoutError(`reached for request to ${this.remoteServiceHost}`);
+        throw new TimeoutError("request");
       } else {
         throw e;
       }
     } finally {
-      timer({status: res?.ok ? "success" : "error"});
+      timer({status: res?.ok ? SendDataStatus.Success : SendDataStatus.Error});
       clearTimeout(timeout);
     }
   }
 
   private nextMonitoringInterval(): void {
-    if (this.status === Status.Stopped) return;
+    if (this.status === Status.Closed) return;
     // ensure next interval only starts after previous request has finished
     // else we might send next request too early and run into rate limit errors
     this.monitoringInterval = setTimeout(async () => {
@@ -220,7 +214,7 @@ export class MonitoringService {
 
   private parseMonitoringEndpoint(endpoint: string): URL {
     if (!endpoint) {
-      throw new Error("Monitoring endpoint must be provided");
+      throw new Error(`Monitoring endpoint is empty or undefined: ${endpoint}`);
     }
 
     try {
@@ -236,7 +230,7 @@ export class MonitoringService {
 
       return url;
     } catch {
-      throw new Error("Monitoring endpoint must be a valid URL");
+      throw new Error(`Monitoring endpoint must be a valid URL: ${endpoint}`);
     }
   }
 }

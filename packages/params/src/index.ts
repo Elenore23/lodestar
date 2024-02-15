@@ -5,18 +5,8 @@ import {gnosisPreset} from "./presets/gnosis.js";
 import {presetStatus} from "./presetStatus.js";
 import {userSelectedPreset, userOverrides} from "./setPreset.js";
 
-export {BeaconPreset} from "./types.js";
-export {
-  ForkName,
-  ForkSeq,
-  ForkLightClient,
-  ForkExecution,
-  ForkBlobs,
-  isForkExecution,
-  isForkWithdrawals,
-  isForkBlobs,
-  isForkLightClient,
-} from "./forkName.js";
+export type {BeaconPreset} from "./types.js";
+export * from "./forkName.js";
 export {presetToJson} from "./json.js";
 export {PresetName};
 
@@ -98,7 +88,9 @@ export const {
   MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP,
 
   FIELD_ELEMENTS_PER_BLOB,
+  MAX_BLOB_COMMITMENTS_PER_BLOCK,
   MAX_BLOBS_PER_BLOCK,
+  KZG_COMMITMENT_INCLUSION_PROOF_DEPTH,
 } = activePreset;
 
 ////////////
@@ -173,6 +165,10 @@ export const RANDOM_SUBNETS_PER_VALIDATOR = 1;
 export const EPOCHS_PER_RANDOM_SUBNET_SUBSCRIPTION = 256;
 /** Rationale: https://github.com/ethereum/consensus-specs/blob/v1.1.10/specs/phase0/p2p-interface.md#why-are-there-attestation_subnet_count-attestation-subnets */
 export const ATTESTATION_SUBNET_COUNT = 64;
+export const SUBNETS_PER_NODE = 2;
+export const NODE_ID_BITS = 256;
+export const ATTESTATION_SUBNET_PREFIX_BITS = Math.log2(ATTESTATION_SUBNET_COUNT);
+export const EPOCHS_PER_SUBNET_SUBSCRIPTION = 256;
 
 // altair validator
 
@@ -183,7 +179,6 @@ export const SYNC_COMMITTEE_SUBNET_SIZE = Math.floor(SYNC_COMMITTEE_SIZE / SYNC_
 export const MAX_REQUEST_BLOCKS = 2 ** 10; // 1024
 export const MAX_REQUEST_BLOCKS_DENEB = 2 ** 7; // 128
 export const MAX_REQUEST_BLOB_SIDECARS = MAX_REQUEST_BLOCKS_DENEB * MAX_BLOBS_PER_BLOCK;
-export const MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS = 2 ** 12; // 4096 epochs, ~18 days
 
 // Lightclient pre-computed
 /**
@@ -240,3 +235,10 @@ export const INTERVALS_PER_SLOT = 3;
 export const BYTES_PER_FIELD_ELEMENT = 32;
 export const BLOB_TX_TYPE = 0x03;
 export const VERSIONED_HASH_VERSION_KZG = 0x01;
+
+// ssz.deneb.BeaconBlockBody.getPathInfo(['blobKzgCommitments',0]).gindex
+export const KZG_COMMITMENT_GINDEX0 = ACTIVE_PRESET === PresetName.minimal ? 864 : 221184;
+export const KZG_COMMITMENT_SUBTREE_INDEX0 = KZG_COMMITMENT_GINDEX0 - 2 ** KZG_COMMITMENT_INCLUSION_PROOF_DEPTH;
+
+// ssz.deneb.BlobSidecars.elementType.fixedSize
+export const BLOBSIDECAR_FIXED_SIZE = ACTIVE_PRESET === PresetName.minimal ? 131672 : 131928;

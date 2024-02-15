@@ -1,5 +1,5 @@
-import {routes, ServerApi} from "@lodestar/api";
 import {fromHexString} from "@chainsafe/ssz";
+import {routes, ServerApi} from "@lodestar/api";
 import {SyncPeriod} from "@lodestar/types";
 import {MAX_REQUEST_LIGHT_CLIENT_UPDATES, MAX_REQUEST_LIGHT_CLIENT_COMMITTEE_HASHES} from "@lodestar/params";
 import {ApiModules} from "../types.js";
@@ -15,10 +15,7 @@ export function getLightclientApi({
       const maxAllowedCount = Math.min(MAX_REQUEST_LIGHT_CLIENT_UPDATES, count);
       const periods = Array.from({length: maxAllowedCount}, (_ignored, i) => i + startPeriod);
       const updates = await Promise.all(periods.map((period) => chain.lightClientServer.getUpdate(period)));
-      return updates.map((update) => ({
-        version: config.getForkName(update.attestedHeader.beacon.slot),
-        data: update,
-      }));
+      return {version: config.getForkName(updates[0].attestedHeader.beacon.slot), data: updates};
     },
 
     async getOptimisticUpdate() {

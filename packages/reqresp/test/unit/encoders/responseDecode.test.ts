@@ -1,56 +1,44 @@
-import chai, {expect} from "chai";
-import chaiAsPromised from "chai-as-promised";
+import {describe, it, expect} from "vitest";
 import all from "it-all";
 import {pipe} from "it-pipe";
-import {Uint8ArrayList} from "uint8arraylist";
 import {LodestarError} from "@lodestar/utils";
 import {responseDecode} from "../../../src/encoders/responseDecode.js";
 import {responseEncodersErrorTestCases, responseEncodersTestCases} from "../../fixtures/encoders.js";
 import {expectRejectedWithLodestarError} from "../../utils/errors.js";
 import {arrToSource, onlySuccessResp} from "../../utils/index.js";
-import {EncodedPayloadType} from "../../../src/types.js";
-
-chai.use(chaiAsPromised);
+import {ResponseIncoming} from "../../../src/types.js";
 
 describe("encoders / responseDecode", () => {
   describe("valid cases", () => {
-    for (const {id, protocol, responseChunks, chunks} of responseEncodersTestCases) {
-      it(`${id}`, async () => {
-        const responses = await pipe(
-          arrToSource(chunks),
-          // eslint-disable-next-line @typescript-eslint/no-empty-function
-          responseDecode(protocol, {onFirstHeader: () => {}, onFirstResponseChunk: () => {}}),
-          all
-        );
+    it.each(responseEncodersTestCases)("$id", async ({protocol, responseChunks, chunks}) => {
+      const responses = (await pipe(
+        arrToSource(chunks),
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        responseDecode(protocol, {onFirstHeader: () => {}, onFirstResponseChunk: () => {}}),
+        all
+      )) as ResponseIncoming[];
 
-        expect(
-          responseChunks.filter(onlySuccessResp).map((r) => {
-            if (r.payload.type === EncodedPayloadType.ssz) {
-              return r.payload.data;
-            } else {
-              return r.payload.bytes;
-            }
-          })
-        ).to.deep.equal(responses);
-      });
-    }
+      const expectedResponses = responseChunks.filter(onlySuccessResp).map((r) => r.payload);
+      expect(responses.map((r) => ({...r, data: Buffer.from(r.data)}))).toEqual(
+        expectedResponses.map((r) => ({...r, data: Buffer.from(r.data)}))
+      );
+    });
   });
 
   describe("error cases", () => {
-    for (const {id, protocol, chunks, decodeError} of responseEncodersErrorTestCases.filter(
-      (r) => r.decodeError !== undefined
-    )) {
-      it(`${id}`, async () => {
+    it.each(responseEncodersErrorTestCases.filter((r) => r.decodeError !== undefined))(
+      "$id",
+      async ({protocol, chunks, decodeError}) => {
         await expectRejectedWithLodestarError(
           pipe(
-            arrToSource(chunks as Uint8ArrayList[]),
+            arrToSource(chunks as Uint8Array[]),
             // eslint-disable-next-line @typescript-eslint/no-empty-function
             responseDecode(protocol, {onFirstHeader: () => {}, onFirstResponseChunk: () => {}}),
             all
           ),
           decodeError as LodestarError<any>
         );
-      });
-    }
+      }
+    );
   });
 });

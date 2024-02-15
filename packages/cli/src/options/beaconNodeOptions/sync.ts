@@ -2,18 +2,20 @@ import {defaultOptions, IBeaconNodeOptions} from "@lodestar/beacon-node";
 import {CliCommandOptions} from "../../util/index.js";
 
 export type SyncArgs = {
-  "sync.isSingleNode": boolean;
-  "sync.disableProcessAsChainSegment": boolean;
-  "sync.disableRangeSync": boolean;
-  "sync.backfillBatchSize": number;
+  "sync.isSingleNode"?: boolean;
+  "sync.disableProcessAsChainSegment"?: boolean;
+  "sync.disableRangeSync"?: boolean;
+  "sync.backfillBatchSize"?: number;
+  "sync.slotImportTolerance"?: number;
 };
 
 export function parseArgs(args: SyncArgs): IBeaconNodeOptions["sync"] {
   return {
     isSingleNode: args["sync.isSingleNode"],
     disableProcessAsChainSegment: args["sync.disableProcessAsChainSegment"],
-    backfillBatchSize: args["sync.backfillBatchSize"],
+    backfillBatchSize: args["sync.backfillBatchSize"] ?? defaultOptions.sync.backfillBatchSize,
     disableRangeSync: args["sync.disableRangeSync"],
+    slotImportTolerance: args["sync.slotImportTolerance"] ?? defaultOptions.sync.slotImportTolerance,
   };
 }
 
@@ -33,6 +35,14 @@ Use only for local networks with a single node, can be dangerous in regular netw
     type: "boolean",
     description: "Disable range sync completely. Should only be used for debugging or testing.",
     defaultDescription: String(defaultOptions.sync.disableRangeSync),
+    group: "sync",
+  },
+
+  "sync.slotImportTolerance": {
+    hidden: true,
+    type: "number",
+    description: "Number of slot tolerance to trigger range sync and to measure if node is synced.",
+    defaultDescription: String(defaultOptions.sync.slotImportTolerance),
     group: "sync",
   },
 

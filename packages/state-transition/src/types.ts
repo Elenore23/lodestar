@@ -1,7 +1,7 @@
-export {EpochContext} from "./cache/epochContext.js";
-export {EpochProcess} from "./cache/epochProcess.js";
+export {EpochCache} from "./cache/epochCache.js";
+export type {EpochTransitionCache} from "./cache/epochTransitionCache.js";
 
-export {
+export type {
   CachedBeaconStateAllForks,
   CachedBeaconStateExecutions,
   CachedBeaconStatePhase0,
@@ -11,7 +11,7 @@ export {
   CachedBeaconStateDeneb,
 } from "./cache/stateCache.js";
 
-export {
+export type {
   BeaconStateAllForks,
   BeaconStateExecutions,
   BeaconStatePhase0,
