@@ -370,7 +370,7 @@ export class LightClientServer {
 
     const syncCommitteeWitness = getSyncCommitteesWitness(postState);
 
-    const receiptsRootProof = getReceiptsRootProof(postState);
+    const receiptsRootProof = getReceiptsRootProof(this.config.getForkName(blockSlot), postState);
 
     // Only store current sync committee once per run
     if (!this.storedCurrentSyncCommittee) {

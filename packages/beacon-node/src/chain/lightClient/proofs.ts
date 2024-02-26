@@ -1,6 +1,6 @@
 import {Proof, ProofType, Tree} from "@chainsafe/persistent-merkle-tree";
 import {BeaconStateAllForks} from "@lodestar/state-transition";
-import {FINALIZED_ROOT_GINDEX, BLOCK_BODY_EXECUTION_PAYLOAD_GINDEX, ForkExecution} from "@lodestar/params";
+import {FINALIZED_ROOT_GINDEX, BLOCK_BODY_EXECUTION_PAYLOAD_GINDEX, ForkName, ForkExecution} from "@lodestar/params";
 import {allForks, ssz} from "@lodestar/types";
 import {SyncCommitteeWitness} from "./types.js";
 
@@ -44,11 +44,17 @@ export function getFinalizedRootProof(state: BeaconStateAllForks): Uint8Array[] 
   return new Tree(state.node).getSingleProof(BigInt(FINALIZED_ROOT_GINDEX));
 }
 
-export function getReceiptsRootProof(state: BeaconStateAllForks): Proof {
+export function getReceiptsRootProof(fork: ForkName, state: BeaconStateAllForks): Proof {
   state.commit();
+  let gIndex = 0;
+  if (fork == ForkName.capella) {
+    gIndex = 899;
+  } else {
+    gIndex = 1795;
+  }
   return new Tree(state.node).getProof({
     type: ProofType.treeOffset,
-    gindices: [BigInt(1795)], // capella:899, deneb:1795
+    gindices: [BigInt(gIndex)], // capella:899, deneb:1795
   });
 }
 
