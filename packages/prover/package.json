@@ -69,7 +69,7 @@
     "@ethereumjs/trie": "^5.0.5",
     "@ethereumjs/tx": "^4.1.2",
     "@ethereumjs/util": "^8.0.6",
-    "@ethereumjs/vm": "^6.4.2",
+    "@ethereumjs/vm": "^7.0.0",
     "@lodestar/api": "^1.16.0",
     "@lodestar/config": "^1.16.0",
     "@lodestar/light-client": "^1.16.0",
