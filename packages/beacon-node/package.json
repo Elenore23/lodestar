@@ -150,7 +150,7 @@
     "qs": "^6.11.1",
     "snappyjs": "^0.7.0",
     "strict-event-emitter-types": "^2.0.0",
-    "systeminformation": "^5.17.12",
+    "systeminformation": "^5.23.8",
     "uint8-varint": "^2.0.2",
     "uint8arraylist": "^2.4.7",
     "uint8arrays": "^5.0.1",
