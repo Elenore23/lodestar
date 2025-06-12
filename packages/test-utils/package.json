@@ -62,8 +62,8 @@
     "@lodestar/params": "^1.16.0",
     "@lodestar/utils": "^1.16.0",
     "axios": "^1.7.8",
-    "testcontainers": "^10.2.1",
-    "tmp": "^0.2.1",
+    "testcontainers": "^10.10.0",
+    "tmp": "^0.2.3",
     "vitest": "^2.1.0"
   },
   "devDependencies": {
