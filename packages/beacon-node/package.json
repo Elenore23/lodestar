@@ -147,7 +147,7 @@
     "libp2p": "1.1.1",
     "multiformats": "^11.0.1",
     "prom-client": "^15.1.0",
-    "qs": "^6.11.1",
+    "qs": "^6.14.2",
     "snappyjs": "^0.7.0",
     "strict-event-emitter-types": "^2.0.0",
     "systeminformation": "^5.17.12",
